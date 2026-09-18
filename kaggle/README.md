@@ -71,8 +71,21 @@ GPU 0 has a total capacity of 14.56 GiB of which 3.06 GiB is free.
 
 ```bash
 kaggle/run_shard.sh --phase bank --num-workers 2 --worker-indices 0,1
-# exports: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, PSP_VAE_CHUNK=8
+# exports: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, PSP_VAE_SLICING=1
 ```
+
+Measured on a T4 by `kaggle/bench_decode.py` (decode of the 25-candidate pool, 512px):
+
+| decode chunk | fits | seconds | peak VRAM |
+| ---: | :---: | ---: | ---: |
+| 1 | yes | 4.64 | 5.43 GiB |
+| 2 | yes | 6.69 | 8.67 GiB |
+| 4 | **no** | - | OOM (14.52 GiB in use) |
+| 6, 8, 12, 16, 25 | **no** | - | OOM |
+
+So chunk 1 is not a conservative default, it is the fastest fitting option: chunk 2 fits
+but is 44% slower, and everything from 4 up dies. A full decode+reward pass for the
+pool costs 50.6 s cold, most of which is the one-time ImageReward load.
 
 `PSP_VAE_CHUNK` is read by `score_predicted_clean()` in `generate_bank_worker.py`: it
 decodes and scores the candidate batch in slices of that size, and `0` keeps the

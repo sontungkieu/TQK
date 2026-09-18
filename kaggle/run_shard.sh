@@ -50,14 +50,15 @@ esac
 
 mkdir -p "$EXP/logs"
 
-# T4 (16 GiB) memory profile. The bank worker decodes all 25 SMC candidates in one
-# VAE call, which needs more than a T4 has; PSP_VAE_CHUNK splits that decode. Phase 2
-# decodes at most 8 candidates, so it is unaffected either way. The published schedule
-# is the single call: set PSP_VAE_CHUNK=0 to reproduce it on a 24 GiB card.
-# kaggle/bench_decode.py measures which chunk size fits and what it costs.
+# T4 (16 GiB) memory profile, chosen from kaggle/bench_decode.py measurements on this
+# GPU: decode of the 25-candidate pool takes 4.64 s at chunk 1 and 6.69 s at chunk 2,
+# while chunks 4/6/8/12/16/25 all die with torch.cuda.OutOfMemoryError even for decode
+# alone. So diffusers' VAE slicing (one image per call) is both the only fitting option
+# and the fastest one; PSP_VAE_CHUNK stays 0, i.e. the published single reward call.
+# On a 24 GiB card set PSP_VAE_SLICING=0 PSP_VAE_CHUNK=0 to reproduce the paper exactly.
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-export PSP_VAE_CHUNK="${PSP_VAE_CHUNK:-8}"
-export PSP_VAE_SLICING="${PSP_VAE_SLICING:-0}"
+export PSP_VAE_SLICING="${PSP_VAE_SLICING:-1}"
+export PSP_VAE_CHUNK="${PSP_VAE_CHUNK:-0}"
 export PSP_ATTENTION_SLICING="${PSP_ATTENTION_SLICING:-0}"
 
 echo "[shard] phase=$PHASE num_workers=$NUM_WORKERS worker_indices=$WORKER_INDICES limit=$LIMIT"
