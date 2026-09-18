@@ -84,6 +84,22 @@ Model and package caches are not committed. Configure Hugging Face credentials
 through `huggingface-cli login` or an environment secret; never write tokens
 into source files.
 
+### Reproducible uv environment (Kaggle and any non-conda host)
+
+The pinned freeze is also available as a uv project, which builds a project-local
+`.venv` instead of modifying the interpreter of the host image:
+
+```bash
+uv sync --locked        # requires internet; uv acquires Python 3.10 itself
+uv run python kaggle/check_env.py
+```
+
+`tools/derive_pyproject.py` transcribes `Fk-Diffusion-Steering/requirements.txt`
+verbatim into `pyproject.toml` so the environment matches the published one, and
+`kaggle/check_env.py` fails a run before any GPU work when a pin, a git revision,
+the CUDA devices or the project imports do not match. See
+[`kaggle/README.md`](kaggle/README.md) for the shardable Kaggle deployment.
+
 ## Reproducing the completed experiment
 
 The top-level runner performs preflight checks, builds the independent
