@@ -120,7 +120,12 @@ def check_cuda(expect_gpus: int, require_cuda: bool) -> tuple[list[str], dict]:
 
 
 def check_imports() -> tuple[list[str], dict]:
-    sys.path.insert(0, str(ROOT / "Fk-Diffusion-Steering" / "text_to_image"))
+    text_root = ROOT / "Fk-Diffusion-Steering" / "text_to_image"
+    # The upstream workers put both the package root and the package directory on
+    # sys.path, because fkd_pipeline_sd imports its siblings (smc_utils, ...) by
+    # absolute name. Mirror that here or this gate reports a false negative.
+    for path in (text_root, text_root / "fkd_diffusers"):
+        sys.path.insert(0, str(path))
     sys.path.insert(0, str(ROOT / "exps" / "single_stage_calibration"))
     targets = [
         ("fkd_diffusers.fkd_pipeline_sd", "FKDStableDiffusion"),
