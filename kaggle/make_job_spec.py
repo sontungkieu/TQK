@@ -60,6 +60,37 @@ def build(args: argparse.Namespace) -> dict:
         outputs = [
             {"id": "env-check", "kind": "json", "path": "{working_root}/env_check.json", "required": True, "min_bytes": 2}
         ]
+    elif args.phase == "smoke-gpu":
+        runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}
+        steps = [
+            {
+                "id": "env-check",
+                "kind": "python-script",
+                "path": "kaggle/check_env.py",
+                "args": ["--out", "{working_root}/env_check.json", "--expect-gpus", str(args.expect_gpus), "--require-cuda"],
+            },
+            {
+                "id": "shard",
+                "kind": "shell-script",
+                "path": "kaggle/run_shard.sh",
+                "args": ["--phase", "bank", "--num-workers", "2", "--worker-indices", "0,1", "--limit-prompts", "2"],
+            },
+            {
+                "id": "validate",
+                "kind": "python-script",
+                "path": "exps/single_stage_calibration/validate_bank.py",
+                "args": ["--expected-prompts", "2"],
+            },
+        ]
+        outputs = [
+            {"id": "env-check", "kind": "json", "path": "{working_root}/env_check.json", "required": True, "min_bytes": 2},
+            {
+                "id": "shard-artifacts",
+                "kind": "directory",
+                "path": "{project_root}/exps/single_stage_calibration/bank_raw",
+                "required": True,
+            },
+        ]
     else:
         runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}
         phase_args = [
@@ -104,7 +135,7 @@ def build(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=["bank", "eval", "smoke-cpu"], required=True)
+    parser.add_argument("--phase", choices=["bank", "eval", "smoke-cpu", "smoke-gpu"], required=True)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--worker-indices", default="0,1")
     parser.add_argument("--limit-prompts", type=int, default=0)
@@ -121,8 +152,8 @@ def main() -> None:
 
     if not args.run_id:
         suffix = args.worker_indices.replace(",", "")
-        if args.phase == "smoke-cpu":
-            args.run_id = "tqk_smoke_cpu"
+        if args.phase.startswith("smoke"):
+            args.run_id = "tqk_" + args.phase.replace("-", "_")
         else:
             args.run_id = f"tqk_{args.phase}_w{args.num_workers}_s{suffix}"
     if not args.title:
