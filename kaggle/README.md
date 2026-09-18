@@ -58,6 +58,39 @@ work when:
 
 It writes `env_check.json` and prints a single `KJO_ENV_CHECK {...}` line.
 
+## Phase 2 (GenEval-553 validation)
+
+`exps/single_stage_validation_553/` compares fixed PSP with the frozen schedule produced
+by phase 1. `kaggle/make_job_spec.py --phase eval` renders the whole chain as one Job
+Spec:
+
+| step | what it does |
+| --- | --- |
+| `env-check` | uv environment + CUDA gate |
+| `prepare-protocol` | locks the 553 GenEval prompts and copies the frozen schedule |
+| `budget-check` | re-asserts `M*checkpoint + K*(64-checkpoint) <= 256` |
+| `shard` | `run_shard.sh --phase eval`, same worker-index sharding on 2 GPUs |
+| `validate` | `validate_generation.py --expected-prompts N` (N = `--limit-prompts` or 553) |
+| `hps` | optional (`--with-hps`), HPS v2.1 on the 1106 final winners, pinned to `CUDA_VISIBLE_DEVICES=0` |
+| `export-geneval` | writes the official GenEval input layout |
+
+Two operational rules matter:
+
+* **Phase 2 consumes phase 1.** `prepare_protocol.py` copies
+  `exps/single_stage_calibration/FROZEN_SCHEDULE.json` and refuses to overwrite a
+  different `exps/single_stage_validation_553/FROZEN_SCHEDULE.json`. Commit the schedule
+  produced by `analyze_bank.py` (and refresh or delete the stale validation copy) in the
+  same commit the Job Spec pins, otherwise that step fails by design.
+* **One session may not be enough.** Phase 2 is 553 prompts x 2 methods. Run
+  `--limit-prompts 4` first, exactly like the upstream preflight, and shard the full run
+  with `--num-workers N` where each session takes two worker indices.
+
+GenEval itself is **not** covered by the uv environment: it needs
+`geneval/environment.yml`, mmdetection v2.28.2 and its weights. Keep it out of band - the
+`export-geneval` step writes the images and metadata, and the official evaluator runs
+wherever that environment already exists. Only HPS is covered by the project pins
+(`hpsv2==1.2.0`, and `evaluate_hps.py` already shims the headless `turtle` import).
+
 ## T4 memory profile
 
 Both workers batch all 25 SMC candidates through the UNet and then decode them in one

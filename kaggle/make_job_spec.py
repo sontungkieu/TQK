@@ -111,6 +111,60 @@ def build(args: argparse.Namespace) -> dict:
                 "required": True,
             },
         ]
+    elif args.phase == "eval":
+        runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}
+        phase_args = [
+            "--phase", "eval",
+            "--num-workers", str(args.num_workers),
+            "--worker-indices", args.worker_indices,
+        ]
+        if args.limit_prompts:
+            phase_args += ["--limit-prompts", str(args.limit_prompts)]
+        expected = args.limit_prompts or 553
+        validation = "exps/single_stage_validation_553"
+        steps = [
+            {
+                "id": "env-check",
+                "kind": "python-script",
+                "path": "kaggle/check_env.py",
+                "args": ["--out", "{working_root}/env_check.json", "--expect-gpus", str(args.expect_gpus), "--require-cuda"],
+            },
+            # Locks the 553 prompts and the frozen schedule copied from the calibration run;
+            # it refuses to overwrite a mismatched FROZEN_SCHEDULE.json, so phase 1 must
+            # already be committed into the checkout this Job Spec pins.
+            {"id": "prepare-protocol", "kind": "python-script", "path": validation + "/prepare_protocol.py"},
+            {"id": "budget-check", "kind": "python-script", "path": validation + "/budget_check.py"},
+            {"id": "shard", "kind": "shell-script", "path": "kaggle/run_shard.sh", "args": phase_args},
+            {
+                "id": "validate",
+                "kind": "python-script",
+                "path": validation + "/validate_generation.py",
+                "args": ["--expected-prompts", str(expected)],
+            },
+            {"id": "export-geneval", "kind": "python-script", "path": validation + "/export_geneval.py"},
+        ]
+        if args.with_hps:
+            steps.insert(5, {
+                "id": "hps",
+                "kind": "python-script",
+                "path": validation + "/evaluate_hps.py",
+                "env": {"CUDA_VISIBLE_DEVICES": "0"},
+            })
+        outputs = [
+            {"id": "env-check", "kind": "json", "path": "{working_root}/env_check.json", "required": True, "min_bytes": 2},
+            {
+                "id": "generation",
+                "kind": "directory",
+                "path": "{project_root}/exps/single_stage_validation_553/outputs",
+                "required": False,
+            },
+            {
+                "id": "geneval-inputs",
+                "kind": "directory",
+                "path": "{project_root}/exps/single_stage_validation_553/geneval_inputs",
+                "required": False,
+            },
+        ]
     else:
         runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}
         phase_args = [
@@ -160,6 +214,7 @@ def main() -> None:
     parser.add_argument("--worker-indices", default="0,1")
     parser.add_argument("--limit-prompts", type=int, default=0)
     parser.add_argument("--expect-gpus", type=int, default=2)
+    parser.add_argument("--with-hps", action="store_true", help="append evaluate_hps.py after the generation step")
     parser.add_argument("--commit", default="")
     parser.add_argument("--repo-url", default="https://github.com/sontungkieu/TQK")
     parser.add_argument("--python", default="3.10.17")
