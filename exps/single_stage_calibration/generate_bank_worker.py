@@ -100,12 +100,28 @@ def explicit_pool(pipe, prompt_id: int) -> tuple[torch.Tensor, list[int], list[s
 
 
 def score_predicted_clean(pipe, prompt: str, x0_preds: torch.Tensor) -> list[float]:
-    decoded = latent_to_decode(model=pipe, output_type="pil", latents=x0_preds)
-    values = do_image_reward(
-        prompts=[prompt] * int(decoded.shape[0]), image_tensors=decoded
-    )
-    scores = [float(value) for value in values]
-    del decoded
+    """Decode and score the whole candidate batch, optionally in chunks.
+
+    The published run decoded all 25 candidates in one VAE call on 24 GiB cards; on a
+    14.56 GiB T4 that call needs about 3 GiB more than is free. PSP_VAE_CHUNK decodes a
+    smaller slice at a time (PSP_VAE_CHUNK=0 keeps the published single call). Only the
+    execution schedule changes: the candidate batch, the seeds and the score order are
+    untouched, while decoded pixels can differ in the last bits because cuDNN may select
+    a different convolution algorithm per slice.
+    """
+    chunk = int(os.environ.get("PSP_VAE_CHUNK", "0") or 0)
+    total = int(x0_preds.shape[0])
+    step = chunk if 0 < chunk < total else total
+    scores: list[float] = []
+    for start in range(0, total, step):
+        decoded = latent_to_decode(
+            model=pipe, output_type="pil", latents=x0_preds[start : start + step]
+        )
+        values = do_image_reward(
+            prompts=[prompt] * int(decoded.shape[0]), image_tensors=decoded
+        )
+        scores.extend(float(value) for value in values)
+        del decoded
     return scores
 
 

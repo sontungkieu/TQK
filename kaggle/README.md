@@ -69,22 +69,26 @@ torch.OutOfMemoryError: ... Tried to allocate 3.12 GiB.
 GPU 0 has a total capacity of 14.56 GiB of which 3.06 GiB is free.
 ```
 
-`kaggle/run_shard.sh` therefore exports by default:
-
 ```bash
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-PSP_VAE_SLICING=1          # decode the candidate batch one image at a time
-PSP_ATTENTION_SLICING=0    # optional UNet attention slicing; not needed at 512px
+kaggle/run_shard.sh --phase bank --num-workers 2 --worker-indices 0,1
+# exports: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, PSP_VAE_CHUNK=8
 ```
 
-Both are read by `_apply_memory_options()` in `generate_bank_worker.py` and
-`run_worker.py`. They change the execution schedule only: the candidate batch, the
-seeds and the 14 recorded scores per candidate are unchanged. Decoded pixels can differ
-in the last bits because cuDNN may select a different convolution algorithm per slice,
-so a bank produced with slicing is not guaranteed bit-identical to one produced on a
-24 GiB card. Set `PSP_VAE_SLICING=0 PSP_ATTENTION_SLICING=0` on a 24 GiB card to
-reproduce the published schedule exactly, and record which profile produced a bank
-when comparing across hosts.
+`PSP_VAE_CHUNK` is read by `score_predicted_clean()` in `generate_bank_worker.py`: it
+decodes and scores the candidate batch in slices of that size, and `0` keeps the
+published single call. `run_worker.py` needs no knob - phase 2 decodes at most 8
+candidates per checkpoint - but `_apply_memory_options()` in both workers still honours
+`PSP_VAE_SLICING` and `PSP_ATTENTION_SLICING` for extreme cases.
+
+Chunking changes the execution schedule only: the candidate batch, the seeds and the 14
+recorded scores per candidate are unchanged. Decoded pixels can differ in the last bits
+because cuDNN may select a different convolution algorithm per slice, so a bank produced
+with chunking is not guaranteed bit-identical to one produced on a 24 GiB card. Record
+which profile produced a bank when comparing across hosts.
+
+`kaggle/bench_decode.py` (Job Spec phase `bench-decode`) measures decode+reward latency,
+peak VRAM and cross-chunk pixel deltas for chunk sizes 1, 2, 4, 6, 8, 12, 16 and 25 on
+the real pool, so the chunk size is chosen from data instead of guessed.
 
 ## Sharding
 
