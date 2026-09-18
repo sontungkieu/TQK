@@ -1,0 +1,14 @@
+bank_raw/
+__pycache__/
+plots/__pycache__/
+prompts/calibration_bank.csv
+prompts/calibration_bank.parquet
+calibration_bank.csv
+calibration_bank.parquet
+replay/*.csv
+plots/*.pdf
+plots/*.svg
+logs/
+metrics/
+COMPLETE
+results_bundle.tar.gz

@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.metadata
+import json
+import os
+import platform
+import statistics
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import torch
+from PIL import Image
+
+ROOT = Path(__file__).resolve().parents[2]
+EXP = Path(__file__).resolve().parent
+TEXT = ROOT / "Fk-Diffusion-Steering" / "text_to_image"
+for path in (TEXT, TEXT / "fkd_diffusers"):
+    sys.path.insert(0, str(path))
+
+from diffusers import DDIMScheduler  # noqa: E402
+from fkd_diffusers.fkd_pipeline_sd import (  # noqa: E402
+    FKDStableDiffusion,
+    latent_to_decode,
+)
+from fkd_diffusers.rewards import do_image_reward  # noqa: E402
+
+MODEL = "runwayml/stable-diffusion-v1-5"
+STEPS = 64
+ETA = 0.0
+GUIDANCE = 7.5
+SCHEDULES = {
+    "psp": {"initial": 8, "checkpoints": ((16, 4), (32, 2), (64, 1))},
+    "early10to2": {"initial": 10, "checkpoints": ((16, 2), (64, 1))},
+}
+
+
+def atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, default=str) + "\n")
+    os.replace(temporary, path)
+
+
+def latent_hash(tensor: torch.Tensor) -> str:
+    raw = tensor.detach().contiguous().cpu().numpy().tobytes()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def load_prompts() -> list[dict[str, Any]]:
+    path = EXP / "prompts_geneval_balanced_300.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    ids = [row["prompt_id"] for row in rows]
+    assert len(rows) == 300 and len(set(ids)) == 300
+    return rows
+
+
+def logical_evals(method: str) -> int:
+    schedule = SCHEDULES[method]
+    alive = schedule["initial"]
+    previous = total = 0
+    for step, keep in schedule["checkpoints"]:
+        total += alive * (step - previous)
+        previous, alive = step, keep
+    return total
+
+
+def build_pipeline():
+    pipe = FKDStableDiffusion.from_pretrained(MODEL, torch_dtype=torch.float16)
+    pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+    pipe = pipe.to("cuda:0")
+    pipe.set_progress_bar_config(disable=True)
+    return pipe
+
+
+def explicit_pool(pipe, prompt_id: int) -> tuple[torch.Tensor, list[int], list[str]]:
+    seeds = [prompt_id * 32 + candidate_id for candidate_id in range(10)]
+    generators = [torch.Generator(device="cuda:0").manual_seed(seed) for seed in seeds]
+    pool = pipe.prepare_latents(
+        batch_size=10,
+        num_channels_latents=pipe.unet.config.in_channels,
+        height=pipe.unet.config.sample_size * pipe.vae_scale_factor,
+        width=pipe.unet.config.sample_size * pipe.vae_scale_factor,
+        dtype=pipe.unet.dtype,
+        device=torch.device("cuda:0"),
+        generator=generators,
+        latents=None,
+    )
+    psp = pool[:8].clone()
+    ours = pool.clone()
+    assert torch.equal(psp, ours[:8])
+    hashes = [latent_hash(pool[idx]) for idx in range(10)]
+    return pool, seeds, hashes
+
+
+def apply_indices(tensor, indices: torch.Tensor, batch_size: int):
+    if tensor is None:
+        return None
+    idx = indices.to(tensor.device)
+    if tensor.shape[0] == batch_size * 2:
+        return tensor[torch.cat([idx, idx + batch_size])]
+    if tensor.shape[0] == batch_size:
+        return tensor[idx]
+    return tensor
+
+
+def run_method(
+    pipe,
+    *,
+    prompt_row: dict[str, Any],
+    method: str,
+    pool: torch.Tensor,
+    seeds: list[int],
+    hashes: list[str],
+    worker_index: int,
+) -> dict[str, Any]:
+    prompt_id = int(prompt_row["prompt_id"])
+    prompt = prompt_row["prompt"]
+    schedule = SCHEDULES[method]
+    initial = int(schedule["initial"])
+    checkpoints = dict(schedule["checkpoints"])
+    current_ids = list(range(initial))
+    initial_latents = pool[:initial].clone()
+    generators = [torch.Generator(device="cuda:0").manual_seed(seeds[i]) for i in range(initial)]
+    trace = []
+    online_reward_s = 0.0
+
+    def callback(_pipe, step_idx, timestep, kwargs):
+        nonlocal current_ids, online_reward_s
+        step = int(step_idx) + 1
+        if step not in checkpoints:
+            return {"latents": kwargs["latents"]}
+        torch.cuda.synchronize()
+        score_start = time.perf_counter()
+        images = latent_to_decode(model=pipe, output_type="pil", latents=kwargs["x0_preds"])
+        scores = [
+            float(x)
+            for x in do_image_reward(prompts=[prompt] * len(current_ids), image_tensors=images)
+        ]
+        torch.cuda.synchronize()
+        score_elapsed = time.perf_counter() - score_start
+        online_reward_s += score_elapsed
+        before = len(current_ids)
+        keep = int(checkpoints[step])
+        order = sorted(range(before), key=lambda idx: (-scores[idx], current_ids[idx]))
+        chosen = torch.tensor(order[:keep], device=kwargs["latents"].device, dtype=torch.long)
+        survivors = [current_ids[idx] for idx in order[:keep]]
+        outputs = {"latents": kwargs["latents"][chosen]}
+        for key in ("prompt_embeds", "negative_prompt_embeds"):
+            if key in kwargs:
+                outputs[key] = apply_indices(kwargs[key], chosen, before)
+        trace.append(
+            {
+                "step": step,
+                "timestep": int(timestep.item()),
+                "batch_before": before,
+                "batch_after": keep,
+                "candidate_ids": list(current_ids),
+                "candidate_seeds": [seeds[idx] for idx in current_ids],
+                "image_reward": scores,
+                "survivor_ids": survivors,
+                "reward_and_decode_s": score_elapsed,
+            }
+        )
+        current_ids = survivors
+        del images
+        return outputs
+
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    started = time.perf_counter()
+    with torch.inference_mode():
+        output = pipe(
+            prompt=[prompt] * initial,
+            num_inference_steps=STEPS,
+            guidance_scale=GUIDANCE,
+            eta=ETA,
+            generator=generators,
+            latents=initial_latents,
+            output_type="latent",
+            callback_on_step_end=callback,
+            callback_on_step_end_tensor_inputs=[
+                "latents",
+                "x0_preds",
+                "prompt_embeds",
+                "negative_prompt_embeds",
+            ],
+        )
+    torch.cuda.synchronize()
+    elapsed = time.perf_counter() - started
+    peak = torch.cuda.max_memory_allocated() / (1024**3)
+    final_latents = output.images
+    # The final decode is only for persisting the already-selected winner. Keep
+    # it outside the timed region, but explicitly disable autograd so the image
+    # processor can safely convert the tensor to NumPy.
+    with torch.inference_mode():
+        final_tensor = latent_to_decode(model=pipe, output_type="pil", latents=final_latents)
+        final_image = pipe.image_processor.postprocess(final_tensor, output_type="pil")[0]
+    winner_id = current_ids[0]
+    final_row = trace[-1]
+    final_ir = float(final_row["image_reward"][final_row["candidate_ids"].index(winner_id)])
+    image_path = EXP / "outputs" / method / f"{prompt_id:05d}.png"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_image = image_path.with_suffix(".tmp.png")
+    final_image.save(temporary_image)
+    os.replace(temporary_image, image_path)
+    payload = {
+        "prompt_id": prompt_id,
+        "prompt": prompt,
+        "tag": prompt_row["tag"],
+        "worker_index": worker_index,
+        "method": method,
+        "model": MODEL,
+        "dtype": "torch.float16",
+        "scheduler": type(pipe.scheduler).__name__,
+        "scheduler_config": dict(pipe.scheduler.config),
+        "steps": STEPS,
+        "eta": ETA,
+        "guidance_scale": GUIDANCE,
+        "candidate_ids": list(range(initial)),
+        "candidate_seeds": seeds[:initial],
+        "initial_latent_hashes": hashes[:initial],
+        "trace": trace,
+        "winner_id": winner_id,
+        "winner_seed": seeds[winner_id],
+        "final_image_reward": final_ir,
+        "logical_unet_evals": logical_evals(method),
+        "elapsed_s": elapsed,
+        "online_reward_s": online_reward_s,
+        "peak_vram_gib": peak,
+        "image_path": str(image_path),
+    }
+    metadata = EXP / "metadata" / f"gpu{worker_index}" / f"{prompt_id:05d}_{method}.json"
+    atomic_json(metadata, payload)
+    return payload
+
+
+def complete(prompt_id: int, method: str, worker: int) -> bool:
+    image = EXP / "outputs" / method / f"{prompt_id:05d}.png"
+    metadata = EXP / "metadata" / f"gpu{worker}" / f"{prompt_id:05d}_{method}.json"
+    if not image.exists() or not metadata.exists():
+        return False
+    try:
+        row = json.loads(metadata.read_text())
+        return row["logical_unet_evals"] == 256 and row["winner_id"] is not None
+    except Exception:
+        return False
+
+
+def warm_up(pipe, prompt: str) -> None:
+    generators = [torch.Generator(device="cuda:0").manual_seed(987654)]
+    with torch.inference_mode():
+        pipe(prompt=[prompt], num_inference_steps=2, eta=0.0, generator=generators, output_type="latent")
+    do_image_reward(images=[Image.new("RGB", (224, 224))], prompts=[prompt])
+    torch.cuda.synchronize()
+
+
+def package_version(distribution: str) -> str | None:
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--gpu-id", type=int, default=0)
+    parser.add_argument("--num-workers", type=int, required=True)
+    parser.add_argument("--worker-index", type=int, required=True)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--limit-subset-positions", type=int, default=0)
+    args = parser.parse_args()
+    if args.gpu_id != 0:
+        raise ValueError("Each process must see exactly one GPU and use cuda:0")
+    if torch.cuda.device_count() != 1:
+        raise RuntimeError(f"Expected exactly one visible GPU, found {torch.cuda.device_count()}")
+    prompts = load_prompts()
+    if args.limit_subset_positions:
+        prompts = prompts[: args.limit_subset_positions]
+    owned = [row for pos, row in enumerate(prompts) if pos % args.num_workers == args.worker_index]
+    pipe = build_pipeline()
+    warm_up(pipe, owned[0]["prompt"])
+    import diffusers
+    import transformers
+
+    hardware = {
+        "worker": args.worker_index,
+        "gpu": torch.cuda.get_device_name(0),
+        "driver": torch.cuda.driver_version() if hasattr(torch.cuda, "driver_version") else None,
+        "torch": torch.__version__,
+        "cuda": torch.version.cuda,
+        "diffusers": diffusers.__version__,
+        "transformers": transformers.__version__,
+        "image_reward": package_version("image-reward"),
+        "hpsv2": package_version("hpsv2"),
+        "python": platform.python_version(),
+        "owned_prompt_ids": [row["prompt_id"] for row in owned],
+    }
+    atomic_json(EXP / "metadata" / f"gpu{args.worker_index}" / "hardware.json", hardware)
+    completed = 0
+    for row in owned:
+        prompt_id = int(row["prompt_id"])
+        pending = [m for m in ("psp", "early10to2") if not (args.resume and complete(prompt_id, m, args.worker_index))]
+        if not pending:
+            completed += 1
+            continue
+        pool, seeds, hashes = explicit_pool(pipe, prompt_id)
+        assert torch.equal(pool[:8], pool[:10][:8])
+        for method in pending:
+            result = run_method(
+                pipe,
+                prompt_row=row,
+                method=method,
+                pool=pool,
+                seeds=seeds,
+                hashes=hashes,
+                worker_index=args.worker_index,
+            )
+            print(json.dumps({k: result[k] for k in ("prompt_id", "method", "elapsed_s", "peak_vram_gib", "final_image_reward")}), flush=True)
+        completed += 1
+    print(json.dumps({"worker": args.worker_index, "completed_prompts": completed, "owned": len(owned)}), flush=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,33 @@
+{
+  "prompt_count": 553,
+  "prompts_sha256": "cb1b5cbd29791dc9b964046254d948dd374de1c4e9d20baaa4dd80886968ffb9",
+  "source_prompts_sha256": "cb1b5cbd29791dc9b964046254d948dd374de1c4e9d20baaa4dd80886968ffb9",
+  "frozen_schedule_sha256": "1e1b9a63eca4fc618cf1c87a924062d10429ce7d525d63f4cc45f5fce520f21f",
+  "source_frozen_schedule_sha256": "1e1b9a63eca4fc618cf1c87a924062d10429ce7d525d63f4cc45f5fce520f21f",
+  "fresh_seed_base": 20260919,
+  "schedule": {
+    "checkpoint": 17,
+    "K": 2,
+    "M": 9,
+    "logical_compute": 247,
+    "unused_compute": 9,
+    "verifier_calls": 2,
+    "verifier_candidate_scores": 11,
+    "schedule_notation": "9\u21922@17",
+    "model": "runwayml/stable-diffusion-v1-5",
+    "steps": 64,
+    "eta": 0.0,
+    "guidance_scale": 7.5,
+    "calibration_prompt_corpus": "ImageReward test_ir.json",
+    "calibration_prompt_count": 120,
+    "search_prompt_count": 80,
+    "validation_prompt_count": 40,
+    "selection_seed": 20260918,
+    "split_seed": 20260918,
+    "selection_rule": "best validation mean among search top-3; within 0.002 prefer fewer verifier scores, smaller M, higher used compute",
+    "search_rank": 3,
+    "validation_mean_IR": 0.5974393230630085,
+    "validation_delta_vs_PSP": -0.08628357197158039,
+    "calibration_bank_sha256": "f62d69988b35f85d803045c35ceb6bc8b56629f43ef898887f907d471d23ec8d"
+  }
+}

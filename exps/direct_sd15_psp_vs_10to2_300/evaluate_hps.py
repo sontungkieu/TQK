@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import csv
+import json
+import os
+import sys
+import types
+from pathlib import Path
+
+import torch
+from PIL import Image
+
+EXP = Path(__file__).resolve().parent
+
+
+def install_turtle_shim() -> None:
+    if "turtle" not in sys.modules:
+        shim = types.ModuleType("turtle")
+        shim.forward = lambda *_args, **_kwargs: None
+        sys.modules["turtle"] = shim
+
+
+def write_rows(path: Path, scores: dict[tuple[str, int], float]) -> None:
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["method", "prompt_id", "hps"])
+        writer.writeheader()
+        for (method, prompt_id), score in sorted(scores.items()):
+            writer.writerow({"method": method, "prompt_id": prompt_id, "hps": score})
+    temporary.replace(path)
+
+
+def main() -> None:
+    prompts = {
+        row["prompt_id"]: row["prompt"]
+        for row in (
+            json.loads(line)
+            for line in (EXP / "prompts_geneval_balanced_300.jsonl").read_text().splitlines()
+            if line.strip()
+        )
+    }
+    output = EXP / "metrics" / "hps.csv"
+    output.parent.mkdir(exist_ok=True)
+    existing: dict[tuple[str, int], float] = {}
+    if output.exists():
+        with output.open() as handle:
+            existing = {
+                (row["method"], int(row["prompt_id"])): float(row["hps"])
+                for row in csv.DictReader(handle)
+            }
+    missing = [
+        (method, prompt_id)
+        for method in ("psp", "early10to2")
+        for prompt_id in sorted(prompts)
+        if (method, prompt_id) not in existing
+    ]
+    if not missing:
+        assert len(existing) == 600
+        print(output)
+        return
+
+    # Same one-load diagonal batched HPSv2 v2.1 path as the repository's
+    # results_scripts/rescore_hps_batch.py. hpsv2.score itself only accepts one
+    # prompt even when it is passed multiple image paths.
+    install_turtle_shim()
+    import huggingface_hub
+    import hpsv2.img_score as hps_img  # type: ignore
+    from hpsv2.src.open_clip import get_tokenizer  # type: ignore
+    from hpsv2.utils import hps_version_map  # type: ignore
+
+    hps_img.initialize_model()
+    model = hps_img.model_dict["model"]
+    preprocess = hps_img.model_dict["preprocess_val"]
+    device = hps_img.device
+    checkpoint_path = huggingface_hub.hf_hub_download("xswu/HPSv2", hps_version_map["v2.1"])
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint["state_dict"])
+    model = model.to(device).eval()
+    tokenizer = get_tokenizer("ViT-H-14")
+    del checkpoint
+
+    batch_size = int(os.environ.get("HPS_BATCH_SIZE", "16"))
+    for start in range(0, len(missing), batch_size):
+        chunk = missing[start : start + batch_size]
+        paths = [EXP / "outputs" / method / f"{prompt_id:05d}.png" for method, prompt_id in chunk]
+        images = torch.stack([preprocess(Image.open(path).convert("RGB")) for path in paths]).to(
+            device, non_blocking=True
+        )
+        text = tokenizer([prompts[prompt_id] for _method, prompt_id in chunk]).to(
+            device, non_blocking=True
+        )
+        with torch.inference_mode(), torch.cuda.amp.autocast():
+            outputs = model(images, text)
+            batch_scores = (outputs["image_features"] * outputs["text_features"]).sum(dim=-1)
+        for key, score in zip(chunk, batch_scores.detach().float().cpu().tolist()):
+            existing[key] = float(score)
+        write_rows(output, existing)
+        print(json.dumps({"hps_complete": len(existing), "hps_total": 600}), flush=True)
+
+    assert len(existing) == 600
+    print(output)
+
+
+if __name__ == "__main__":
+    main()
