@@ -99,6 +99,11 @@ Two operational rules matter:
 * **One session may not be enough.** Phase 2 is 553 prompts x 2 methods. Run
   `--limit-prompts 4` first, exactly like the upstream preflight, and shard the full run
   with `--num-workers N` where each session takes two worker indices.
+* **HPS needs the whole run.** `evaluate_hps.py` iterates all 553 prompts and opens
+  `outputs/<method>/<prompt_id>.png`, so it cannot run on a limited preflight;
+  `make_job_spec.py` now rejects `--with-hps --limit-prompts`. The preflight therefore
+  covers env-check, prepare-protocol, budget-check, generation and validation only,
+  exactly like the `run_all.sh` preflight.
 
 GenEval itself is **not** covered by the uv environment: it needs
 `geneval/environment.yml`, mmdetection v2.28.2 and its weights. Keep it out of band - the

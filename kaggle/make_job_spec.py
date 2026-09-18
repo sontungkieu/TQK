@@ -227,6 +227,13 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
+    if args.with_hps and args.limit_prompts:
+        raise SystemExit(
+            "--with-hps requires the full 553-prompt run: evaluate_hps.py iterates the whole\n"
+            "prompt list and fails on the first missing outputs/<method>/<prompt_id>.png.\n"
+            "run_all.sh likewise runs generation+validation only in its preflight."
+        )
+
     if not args.run_id:
         suffix = args.worker_indices.replace(",", "")
         if args.phase.startswith("smoke"):
