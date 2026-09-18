@@ -73,7 +73,7 @@ def build(args: argparse.Namespace) -> dict:
                 "id": "bench-decode",
                 "kind": "python-script",
                 "path": "kaggle/bench_decode.py",
-                "args": ["--out", "{working_root}/decode_bench.json"],
+                "args": ["--out", "{working_root}/decode_bench.json", "--with-reward"],
             },
         ]
         outputs = [
