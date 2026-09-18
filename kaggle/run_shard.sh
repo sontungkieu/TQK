@@ -49,7 +49,15 @@ case "$PHASE" in
 esac
 
 mkdir -p "$EXP/logs"
+
+# T4 (16 GiB) memory profile. The published run targeted two 24 GiB RTX 4090s and
+# enabled neither knob; set PSP_VAE_SLICING=0 to reproduce that schedule exactly.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export PSP_VAE_SLICING="${PSP_VAE_SLICING:-1}"
+export PSP_ATTENTION_SLICING="${PSP_ATTENTION_SLICING:-0}"
+
 echo "[shard] phase=$PHASE num_workers=$NUM_WORKERS worker_indices=$WORKER_INDICES limit=$LIMIT"
+echo "[shard] memory: vae_slicing=$PSP_VAE_SLICING attention_slicing=$PSP_ATTENTION_SLICING alloc=$PYTORCH_CUDA_ALLOC_CONF"
 echo "[shard] python=$(command -v python) version=$(python -V 2>&1)"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader | sed 's/^/[shard] gpu /'
 

@@ -79,11 +79,28 @@ def logical_evals(spec: dict[str, Any]) -> int:
     return total
 
 
+def _apply_memory_options(pipe):
+    """Kaggle/T4 memory knobs; the published 2x RTX 4090 run enabled neither.
+
+    PSP_VAE_SLICING=1 makes the VAE decode the candidate batch one image at a time
+    (the diffusers default decodes all candidates at once, which needs more than the
+    14.56 GiB of a T4). PSP_ATTENTION_SLICING=1 does the same for UNet attention.
+    Both are memory/execution-schedule knobs only: the candidate batch, the seeds and
+    the recorded checkpoint scores are unchanged, but decoded pixels can differ in the
+    last bits because cuDNN may pick a different convolution algorithm per slice.
+    """
+    if os.environ.get("PSP_ATTENTION_SLICING", "0") == "1":
+        pipe.enable_attention_slicing()
+    if os.environ.get("PSP_VAE_SLICING", "0") == "1":
+        pipe.enable_vae_slicing()
+
+
 def build_pipeline():
     pipe = FKDStableDiffusion.from_pretrained(MODEL, torch_dtype=torch.float16)
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     pipe = pipe.to("cuda:0")
     pipe.set_progress_bar_config(disable=True)
+    _apply_memory_options(pipe)
     return pipe
 
 
