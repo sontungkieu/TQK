@@ -144,10 +144,12 @@ def build(args: argparse.Namespace) -> dict:
             {"id": "export-geneval", "kind": "python-script", "path": validation + "/export_geneval.py"},
         ]
         if args.with_hps:
+            # kaggle/run_hps.py restores the CLIP BPE asset that setup/setup.sh downloads
+            # and surfaces tracebacks on stdout, then runs the published evaluator.
             steps.insert(5, {
                 "id": "hps",
                 "kind": "python-script",
-                "path": validation + "/evaluate_hps.py",
+                "path": "kaggle/run_hps.py",
                 "env": {"CUDA_VISIBLE_DEVICES": "0"},
             })
         outputs = [
