@@ -58,6 +58,21 @@ work when:
 
 It writes `env_check.json` and prints a single `KJO_ENV_CHECK {...}` line.
 
+## Phase 1 result on T4 (this deployment)
+
+Independent calibration on 2x T4, 2026-09-18 (kernel `codemaivanngu/tqk-bank-p1-260918-0731`):
+120 prompts x 25 trajectories, **11.34 GPU-h** inside a **6.0 h** session, peak **7.41 GiB**,
+mean **340 s/prompt** (99.5 s of that decode + ImageReward).
+
+The 80-prompt search split ranked `9→2@17` first (final IR 0.9336) and the untouched
+40-prompt validation split selected it again (final IR 0.5881). That is the **same schedule
+the published 2x RTX 4090 run froze**, so the committed
+`exps/single_stage_calibration/FROZEN_SCHEDULE.json` is left untouched and
+`prepare_protocol.py` passes unchanged. Only provenance differs - search rank 1 vs 3 and
+validation IR 0.5881 vs 0.5974 - which is what different fp16 kernels on T4 vs 4090 should
+produce. `kaggle/evidence/phase1_t4_freeze.json` records this run's numbers, the top-5
+search table and the bank SHA-256.
+
 ## Phase 2 (GenEval-553 validation)
 
 `exps/single_stage_validation_553/` compares fixed PSP with the frozen schedule produced
