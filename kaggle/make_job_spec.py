@@ -73,21 +73,17 @@ def build(args: argparse.Namespace) -> dict:
                 "args": ["--out", "{working_root}/env_check.json"],
             },
             {
-                "id": "build-geneval",
+                "id": "install-geneval",
                 "kind": "shell-script",
-                "path": "kaggle/build_geneval_env.sh",
+                "path": "kaggle/install_geneval_env.sh",
                 "timeout_s": 5400,
             },
         ]
         outputs = [
             {"id": "env-check", "kind": "json", "path": "{working_root}/env_check.json", "required": True, "min_bytes": 2},
-            {
-                "id": "geneval-artifact",
-                "kind": "file",
-                "path": "{working_root}/geneval_env_artifact.tar.gz",
-                "required": True,
-                "min_bytes": 1000000,
-            },
+            # The installer keeps the environment under /tmp and writes back only this
+            # tiny stage file, so the kernel output stays cheap to list and fetch.
+            {"id": "geneval-stages", "kind": "file", "path": "{working_root}/geneval_stages.txt", "required": False},
         ]
     elif args.phase == "bench-decode":
         runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}
@@ -171,6 +167,11 @@ def build(args: argparse.Namespace) -> dict:
                 "args": ["--expected-prompts", str(expected)],
             },
             {"id": "export-geneval", "kind": "python-script", "path": validation + "/export_geneval.py"},
+            # GenEval is installed into /tmp inside this session (never into
+            # /kaggle/working), scored here because the evaluator needs CUDA and the exported
+            # samples are symlinks into this session outputs tree, then removed again.
+            {"id": "install-geneval", "kind": "shell-script", "path": "kaggle/install_geneval_env.sh", "timeout_s": 3600},
+            {"id": "evaluate-geneval", "kind": "shell-script", "path": "kaggle/evaluate_geneval.sh", "timeout_s": 7200},
             # One archive keeps later downloads to a single output listing, which is the
             # Kaggle endpoint that rate-limits (HTTP 429) on repeated large fetches.
             {"id": "pack-artifacts", "kind": "shell-script", "path": "kaggle/pack_artifacts.sh"},
@@ -199,6 +200,12 @@ def build(args: argparse.Namespace) -> dict:
                 "required": False,
             },
             {"id": "artifacts", "kind": "file", "path": "{working_root}/artifacts.tar.gz", "required": False},
+            {
+                "id": "geneval-results",
+                "kind": "directory",
+                "path": "{project_root}/exps/single_stage_validation_553/geneval_results",
+                "required": False,
+            },
         ]
     else:
         runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}
