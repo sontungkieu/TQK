@@ -62,10 +62,10 @@ for name in $ITEMS; do
   fi
 done
 [ "$copied" -gt 0 ] || { echo "[stage] FATAL: none of the requested items exist at $SRC_EXP"; exit 1; }
-PNGS=$(find "$EXP/outputs" -maxdepth 2 -name '*.png' 2>/dev/null | wc -l)
-MD=$(find "$EXP/metadata" -maxdepth 3 -type f 2>/dev/null | wc -l)
-MT=$(find "$EXP/metrics" -maxdepth 2 -type f 2>/dev/null | wc -l)
-GV=$(find "$EXP/geneval_results" -maxdepth 2 -type f 2>/dev/null | wc -l)
+PNGS=$(find "$EXP/outputs" -maxdepth 2 -name '*.png' 2>/dev/null | wc -l) || true
+MD=$(find "$EXP/metadata" -maxdepth 3 -type f 2>/dev/null | wc -l) || true
+MT=$(find "$EXP/metrics" -maxdepth 2 -type f 2>/dev/null | wc -l) || true
+GV=$(find "$EXP/geneval_results" -maxdepth 2 -type f 2>/dev/null | wc -l) || true
 echo "[stage] pngs=$PNGS metadata=$MD metrics=$MT geneval=$GV"
 
 if [ "$RUN_EXPORT" = "1" ]; then

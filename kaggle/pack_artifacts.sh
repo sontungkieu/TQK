@@ -11,12 +11,20 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EXP="${PACK_EXP_DIR:-$ROOT/exps/single_stage_validation_553}"
 OUT="${PACK_OUT:-/kaggle/working/artifacts.tar.gz}"
 
+[ -d "$EXP" ] || { echo "[pack] FATAL: experiment directory not found: $EXP"; exit 1; }
 cd "$EXP"
 items=""
 # PACK_ITEMS lets an evaluation-only session archive just the scores it produced; the images it
 # scored already live in the generating kernel's output.
+#
+# An `if` rather than `[ -e "$name" ] && items=...`: under `set -e` a test that fails as the last
+# command of the loop body aborts the script, so one missing optional item - a FINAL_REPORT.md
+# that the aggregate step has not written yet - would have destroyed the archive protecting the
+# hours of generation that ran before it.
 for name in ${PACK_ITEMS:-outputs metadata metrics geneval_inputs geneval_results protocol_manifest.json prompts_geneval_all_553.jsonl FROZEN_SCHEDULE.json FINAL_REPORT.md}; do
-  [ -e "$name" ] && items="$items $name"
+  if [ -e "$name" ]; then
+    items="$items $name"
+  fi
 done
 [ -n "$items" ] || { echo "[pack] nothing to pack in $EXP"; exit 1; }
 
