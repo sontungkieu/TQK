@@ -171,6 +171,9 @@ def build(args: argparse.Namespace) -> dict:
                 "args": ["--expected-prompts", str(expected)],
             },
             {"id": "export-geneval", "kind": "python-script", "path": validation + "/export_geneval.py"},
+            # One archive keeps later downloads to a single output listing, which is the
+            # Kaggle endpoint that rate-limits (HTTP 429) on repeated large fetches.
+            {"id": "pack-artifacts", "kind": "shell-script", "path": "kaggle/pack_artifacts.sh"},
         ]
         if args.with_hps:
             # kaggle/run_hps.py restores the CLIP BPE asset that setup/setup.sh downloads
@@ -195,6 +198,7 @@ def build(args: argparse.Namespace) -> dict:
                 "path": "{project_root}/exps/single_stage_validation_553/geneval_inputs",
                 "required": False,
             },
+            {"id": "artifacts", "kind": "file", "path": "{working_root}/artifacts.tar.gz", "required": False},
         ]
     else:
         runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}

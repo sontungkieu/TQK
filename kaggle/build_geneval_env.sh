@@ -12,6 +12,7 @@
 # build uses uv when it is there and falls back to venv+pip otherwise. Either way the
 # installed wheels are identical; uv is simply faster and lets us record a frozen lock.
 set -euo pipefail
+trap 'echo "[geneval] FAILED at line $LINENO: $BASH_COMMAND"; exit 1' ERR
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${GENEAL_WORK_ROOT:-/kaggle/working}"
@@ -20,6 +21,7 @@ WEIGHTS_DIR="$WORK/geneval_weights"
 LOCK_FILE="$WORK/geneval_env_requirements.lock.txt"
 ARTIFACT="$WORK/geneval_env_artifact.tar.gz"
 MMCV_WHEEL_INDEX="https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/index.html"
+MMCV_WHEEL="https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/mmcv_full-1.7.2-cp310-cp310-manylinux1_x86_64.whl"
 
 find_uv() {
   if command -v uv >/dev/null 2>&1; then
@@ -69,7 +71,7 @@ pipi -q networkx==2.8.8 open-clip-torch==2.26.1 clip-benchmark einops lightning 
 
 echo "[geneval] mmengine + mmcv-full 1.7.2 (prebuilt wheel, no compilation)"
 pipi -q "mmengine==0.10.4"
-if ! pipi -q "mmcv-full==1.7.2" -f "$MMCV_WHEEL_INDEX"; then
+if ! pipi -q "$MMCV_WHEEL"; then
   echo "[geneval] wheel index path failed, falling back to mim"
   "$ENV_DIR/bin/mim" install "mmcv-full==1.7.2" -y
 fi
@@ -78,7 +80,7 @@ echo "[geneval] mmdetection 2.x from source (configs ship with the clone)"
 if [ ! -d "$ENV_DIR/mmdetection/.git" ]; then
   git clone --quiet --depth 1 --branch 2.x https://github.com/open-mmlab/mmdetection.git "$ENV_DIR/mmdetection"
 fi
-pipi -q -e "$ENV_DIR/mmdetection"
+pipi -q --no-build-isolation -e "$ENV_DIR/mmdetection"
 
 echo "[geneval] Mask2Former detector weights"
 if [ ! -f "$WEIGHTS_DIR/mask2former_swin-s-p4-w7-224_lsj_8x2_50e_coco.pth" ]; then
@@ -137,6 +139,8 @@ Path(out).write_text(json.dumps(manifest, indent=2) + "\n")
 print(json.dumps(manifest, indent=2))
 PY
 
+echo "[geneval] disk before tar:"; df -h "$WORK" | tail -1
+echo "[geneval] installed: $(find "$ENV_DIR" -name '*.dist-info' -maxdepth 5 | wc -l) dist-info dirs"
 echo "[geneval] tarring $ARTIFACT"
 du -sh "$ENV_DIR" "$WEIGHTS_DIR" || true
 TAR_EXTRA=""
