@@ -85,6 +85,38 @@ def build(args: argparse.Namespace) -> dict:
             # tiny stage file, so the kernel output stays cheap to list and fetch.
             {"id": "geneval-stages", "kind": "file", "path": "{working_root}/geneval_stages.txt", "required": False},
         ]
+    elif args.phase == "geneval-eval":
+        # Evaluation-only session. export_geneval.py needs the outputs tree, and regenerating
+        # 553 prompts x 2 methods for a scoring bug is wasteful, so the finished generation
+        # kernel is attached as a kernel source (--kernel-source owner/slug, same owner) and
+        # kaggle/stage_geneval_inputs.sh copies the measured tree into this project.
+        validation = "exps/single_stage_validation_553"
+        runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}
+        steps = [
+            {"id": "stage-geneval-inputs", "kind": "shell-script", "path": "kaggle/stage_geneval_inputs.sh", "timeout_s": 1800},
+            {"id": "install-geneval", "kind": "shell-script", "path": "kaggle/install_geneval_env.sh", "timeout_s": 3600},
+            {"id": "evaluate-geneval", "kind": "shell-script", "path": "kaggle/evaluate_geneval.sh", "timeout_s": 18000},
+            {"id": "aggregate", "kind": "shell-script", "path": "kaggle/aggregate_geneval.sh", "timeout_s": 900},
+            {"id": "pack-geneval", "kind": "shell-script", "path": "kaggle/pack_artifacts.sh",
+             "env": {"PACK_ITEMS": "geneval_results metrics FINAL_REPORT.md",
+                     "PACK_OUT": "{working_root}/geneval_artifacts.tar.gz"}},
+        ]
+        outputs = [
+            {
+                "id": "geneval-results",
+                "kind": "directory",
+                "path": "{project_root}/" + validation + "/geneval_results",
+                "required": True,
+            },
+            {
+                "id": "metrics",
+                "kind": "directory",
+                "path": "{project_root}/" + validation + "/metrics",
+                "required": True,
+            },
+            {"id": "geneval-artifacts", "kind": "file", "path": "{working_root}/geneval_artifacts.tar.gz", "required": False},
+            {"id": "final-report", "kind": "file", "path": "{project_root}/" + validation + "/FINAL_REPORT.md", "required": False},
+        ]
     elif args.phase == "bench-decode":
         runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}
         steps = [
@@ -167,17 +199,24 @@ def build(args: argparse.Namespace) -> dict:
                 "args": ["--expected-prompts", str(expected)],
             },
             {"id": "export-geneval", "kind": "python-script", "path": validation + "/export_geneval.py"},
-            # GenEval is installed into /tmp inside this session (never into
-            # /kaggle/working), scored here because the evaluator needs CUDA and the exported
-            # samples are symlinks into this session outputs tree, then removed again.
+            # Archive the hours of generation before touching GenEval: a scoring step that
+            # dies (timeout, OOM, evaluator bug) must not also cost the measurements. One
+            # archive keeps later downloads to a single output listing, the Kaggle endpoint
+            # that rate-limits (HTTP 429) on repeated large fetches.
+            {"id": "pack-artifacts", "kind": "shell-script", "path": "kaggle/pack_artifacts.sh"},
+            # GenEval installs into /tmp inside this session (never into /kaggle/working) and
+            # scores here, because the evaluator asserts CUDA and geneval_inputs are symlinks
+            # into this session's outputs tree. One method per GPU: the measured single-method
+            # time on a T4 overran the old 2 h timeout, hence the wider budget.
             {"id": "install-geneval", "kind": "shell-script", "path": "kaggle/install_geneval_env.sh", "timeout_s": 3600},
-            {"id": "evaluate-geneval", "kind": "shell-script", "path": "kaggle/evaluate_geneval.sh", "timeout_s": 7200},
+            {"id": "evaluate-geneval", "kind": "shell-script", "path": "kaggle/evaluate_geneval.sh", "timeout_s": 18000},
             # Reports are computed here, in the session that owns the data and the project
             # environment, instead of on a laptop afterwards. The step is best effort.
             {"id": "aggregate", "kind": "shell-script", "path": "kaggle/aggregate_geneval.sh", "timeout_s": 900},
-            # One archive keeps later downloads to a single output listing, which is the
-            # Kaggle endpoint that rate-limits (HTTP 429) on repeated large fetches.
-            {"id": "pack-artifacts", "kind": "shell-script", "path": "kaggle/pack_artifacts.sh"},
+            # Scores and report only: the images are already in the essential archive.
+            {"id": "pack-geneval", "kind": "shell-script", "path": "kaggle/pack_artifacts.sh",
+             "env": {"PACK_ITEMS": "geneval_results metrics FINAL_REPORT.md",
+                     "PACK_OUT": "{working_root}/geneval_artifacts.tar.gz"}},
         ]
         if args.with_hps:
             # kaggle/run_hps.py restores the CLIP BPE asset that setup/setup.sh downloads
@@ -256,7 +295,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--phase",
-        choices=["bank", "eval", "smoke-cpu", "smoke-gpu", "bench-decode", "geneval-build"],
+        choices=["bank", "eval", "smoke-cpu", "smoke-gpu", "bench-decode", "geneval-build", "geneval-eval"],
         required=True,
     )
     parser.add_argument("--num-workers", type=int, default=2)

@@ -13,7 +13,9 @@ OUT="${PACK_OUT:-/kaggle/working/artifacts.tar.gz}"
 
 cd "$EXP"
 items=""
-for name in outputs metadata metrics geneval_inputs geneval_results protocol_manifest.json prompts_geneval_all_553.jsonl FROZEN_SCHEDULE.json FINAL_REPORT.md; do
+# PACK_ITEMS lets an evaluation-only session archive just the scores it produced; the images it
+# scored already live in the generating kernel's output.
+for name in ${PACK_ITEMS:-outputs metadata metrics geneval_inputs geneval_results protocol_manifest.json prompts_geneval_all_553.jsonl FROZEN_SCHEDULE.json FINAL_REPORT.md}; do
   [ -e "$name" ] && items="$items $name"
 done
 [ -n "$items" ] || { echo "[pack] nothing to pack in $EXP"; exit 1; }
