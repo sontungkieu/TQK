@@ -28,6 +28,7 @@ MANIFEST="/tmp/geneval_env_manifest.json"
 STAGE_LOG="/tmp/geneval_stages.txt"
 STAGE_REPORT="$WORK/geneval_stages.txt"
 INSTALL_LOG="/tmp/geneval_install.log"
+CONSTRAINTS="/tmp/geneval_constraints.txt"
 MMCV_WHEEL="https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/mmcv_full-1.7.2-cp310-cp310-manylinux1_x86_64.whl"
 MMDET_TAG="v2.28.2"
 MMDET_PYTHON="3.10"
@@ -86,10 +87,20 @@ else
   python -m venv "$ENV_DIR"
 fi
 PY="$ENV_DIR/bin/python"
+# Constraints, not requirements: they stop a later resolution from silently moving the two
+# packages this environment is built around. A plain `uv pip install` of the evaluator's
+# dependencies happily resolves torch 2.10 + triton 3.8 on a fresh resolver state, and mmcv-full
+# 1.7.2 was compiled against torch 2.1.0 - so the environment must fail loudly instead.
+cat > "$CONSTRAINTS" <<'EOF'
+numpy==1.26.4
+torch==2.1.2
+torchvision==0.16.2
+EOF
+
 # --no-cache/--no-cache-dir keep the download cache out of the picture: the cached wheels would
 # roughly double the peak disk footprint of an environment that is already several GB.
 pipi() {
-  if [ -n "$UV" ]; then "$UV" pip install --no-cache --python "$PY" "$@"; else "$ENV_DIR/bin/pip" install --no-cache-dir "$@"; fi
+  if [ -n "$UV" ]; then "$UV" pip install --no-cache -c "$CONSTRAINTS" --python "$PY" "$@"; else "$ENV_DIR/bin/pip" install --no-cache-dir -c "$CONSTRAINTS" "$@"; fi
 }
 mark "venv created ($("$PY" -V 2>&1))"
 
