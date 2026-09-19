@@ -42,8 +42,13 @@ exec >>"$INSTALL_LOG" 2>&1
 publish_stages() {
   cp -f "$STAGE_LOG" "$STAGE_REPORT" 2>/dev/null || true
 }
+# Every mark records the free space and the environment size, so the stage report alone shows
+# whether a run died from a full disk (Kaggle CPU sessions have a hard disk quota) or from a
+# real install error.
 mark() {
-  printf '%s OK %s\n' "$(date -u +%H:%M:%S)" "$1" >> "$STAGE_LOG"
+  printf '%s OK %-46s free_tmp=%s env=%s\n' "$(date -u +%H:%M:%S)" "$1" \
+    "$(df -Pk /tmp 2>/dev/null | awk 'NR==2{printf "%.1fG", $4/1048576}')" \
+    "$(du -sh "$ENV_DIR" 2>/dev/null | cut -f1)" >> "$STAGE_LOG"
   printf '[geneval] stage ok: %s\n' "$1" >&3
   publish_stages
 }
@@ -81,8 +86,10 @@ else
   python -m venv "$ENV_DIR"
 fi
 PY="$ENV_DIR/bin/python"
+# --no-cache/--no-cache-dir keep the download cache out of the picture: the cached wheels would
+# roughly double the peak disk footprint of an environment that is already several GB.
 pipi() {
-  if [ -n "$UV" ]; then "$UV" pip install --python "$PY" "$@"; else "$ENV_DIR/bin/pip" install "$@"; fi
+  if [ -n "$UV" ]; then "$UV" pip install --no-cache --python "$PY" "$@"; else "$ENV_DIR/bin/pip" install --no-cache-dir "$@"; fi
 }
 mark "venv created ($("$PY" -V 2>&1))"
 
