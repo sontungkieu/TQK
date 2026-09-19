@@ -100,6 +100,13 @@ verbatim into `pyproject.toml` so the environment matches the published one, and
 the CUDA devices or the project imports do not match. See
 [`kaggle/README.md`](kaggle/README.md) for the shardable Kaggle deployment.
 
+The official GenEval evaluator is built **inside the session** by
+`kaggle/install_geneval_env.sh` (torch 2.1.2 with the prebuilt mmcv-full 1.7.2
+wheel, numpy pinned to 1.x) because `export_geneval.py` links its inputs to the
+images that session just generated. `kaggle/make_job_spec.py --phase geneval-build`
+preflights that build on CPU, without GPU quota, before an evaluation session
+depends on it.
+
 ## Reproducing the completed experiment
 
 The top-level runner performs preflight checks, builds the independent

@@ -88,8 +88,14 @@ Spec:
 | `validate` | `validate_generation.py --expected-prompts N` (N = `--limit-prompts` or 553) |
 | `hps` | optional (`--with-hps`), HPS v2.1 on the 1106 final winners, pinned to `CUDA_VISIBLE_DEVICES=0` |
 | `export-geneval` | writes the official GenEval input layout |
+| `install-geneval` | builds the official GenEval evaluator under `/tmp` and smoke-tests its import chain |
+| `evaluate-geneval` | runs `geneval/evaluation/evaluate_images.py` + `summary_scores.py` per method, then deletes the `/tmp` environment |
+| `pack-artifacts` | one `artifacts.tar.gz` (outputs, metadata, metrics, geneval inputs/results, manifests) |
 
-Two operational rules matter:
+The last three steps exist because the evaluation has to happen **inside this session** (see
+GenEval below). Nothing bulky is written to `/kaggle/working` except that single archive.
+
+Three operational rules matter:
 
 * **Phase 2 consumes phase 1.** `prepare_protocol.py` copies
   `exps/single_stage_calibration/FROZEN_SCHEDULE.json` and refuses to overwrite a
@@ -105,11 +111,39 @@ Two operational rules matter:
   covers env-check, prepare-protocol, budget-check, generation and validation only,
   exactly like the `run_all.sh` preflight.
 
-GenEval itself is **not** covered by the uv environment: it needs
-`geneval/environment.yml`, mmdetection v2.28.2 and its weights. Keep it out of band - the
-`export-geneval` step writes the images and metadata, and the official evaluator runs
-wherever that environment already exists. Only HPS is covered by the project pins
-(`hpsv2==1.2.0`, and `evaluate_hps.py` already shims the headless `turtle` import).
+* **GenEval stays in the generating session.** `geneval/evaluation/evaluate_images.py`
+  asserts CUDA, and `export_geneval.py` writes `geneval_inputs/<method>/<id>.png` as
+  **symlinks** into the session's `outputs/` tree, so the scores cannot be produced from a
+  downloaded copy without regenerating that tree. `install-geneval` +
+  `evaluate-geneval` therefore run at the end of the same job, and they delete the `/tmp`
+  environment again so no artifact grows by a few GB.
+
+## GenEval environment (in-session)
+
+`kaggle/install_geneval_env.sh` mirrors `geneval/environment.yml` on the CUDA 12.1 path,
+where `torch==2.1.2` has a **prebuilt** `mmcv-full==1.7.2` wheel, so nothing is compiled:
+
+* the evaluator imports `numpy`, `pandas`, `PIL`, `torch`, `mmdet.apis` (Mask2Former
+  Swin-S), `open_clip` and `clip_benchmark.metrics.zeroshot_classification`;
+* **numpy must stay on 1.x.** An unpinned resolve picks numpy 2.2.6 + opencv-python 5.x and the
+  mmcv C extension then fails at import with `numpy.core.multiarray failed to import`;
+* mmdet 2.x is installed as a `.pth` source entry (pure Python; the CUDA ops live in mmcv),
+  which skips its `install_requires`, so its runtime requirements (`matplotlib`, `scipy`,
+  `six`, `terminaltables`, `pycocotools`) are pinned explicitly;
+* `clip-benchmark` must be `>=1.5`: the `environment.yml` pin 1.4.0 declares `torch<2` and
+  cannot resolve against torch 2.1.2, while `zeroshot_classification` keeps the same
+  five-positional-argument API the evaluator calls;
+* everything lives under `/tmp`, installs run with `--no-cache`, and the whole run writes back
+  only `geneval_stages.txt` (~2 KB). Each stage line records free space and environment size,
+  and a failure appends the tail of `/tmp/geneval_install.log`, so one small fetch is enough to
+  tell disk exhaustion apart from an install error.
+
+`kaggle/make_job_spec.py --phase geneval-build` is the **CPU preflight** for that installer:
+it builds and smoke-tests the environment without spending GPU quota. Run it before an
+evaluation session so a broken evaluator cannot burn six hours of generation time.
+
+Only HPS is covered by the project pins (`hpsv2==1.2.0`, and `evaluate_hps.py` already shims
+the headless `turtle` import).
 
 ## T4 memory profile
 
@@ -184,13 +218,15 @@ kaggle/run_shard.sh --phase bank --num-workers 4 --worker-indices 0,1 --dry-run
 Kaggle counts quota in **wall-clock session time**, not GPU-hours, so a 2x T4 session costs
 the same as a 1x T4 session of the same duration.
 
-| phase | work | GPU-time (1 T4) | wall on 2x T4 |
-| --- | --- | --- | --- |
-| bank | 120 prompts x 25 trajectories x 64 DDIM steps | ~11 h | ~5.5 h |
-| eval | 553 prompts x 2 methods | ~4 h | ~2 h |
+| phase | work | measured session on 2x T4 |
+| --- | --- | --- |
+| bank | 120 prompts x 25 trajectories x 64 DDIM steps | 21 559.6 s (5.99 h), 11.34 GPU-h, peak 7.41 GiB |
+| eval | 553 prompts x 2 methods + HPS | 24 394.7 s (6.78 h) — `shard` 24 094.9 s, `hps` 211.1 s |
 
-Estimates scale ~13.3 s per 64-step 512px SD1.5 trajectory measured on T4 (25 steps = 5.2 s
-under `attention_slicing`). A larger calibration multiplies the bank phase: raise
+Add the GenEval install and two evaluation passes to an `eval` session: budget ~8 h and keep
+the 12 h session ceiling in mind. Estimates scale ~13.3 s per 64-step 512px SD1.5 trajectory
+measured on T4 (25 steps = 5.2 s under `attention_slicing`); phase 2 measured 40.5 s per
+generation (n=8, 38.0-45.1 s). A larger calibration multiplies the bank phase: raise
 `--num-workers` and hand each session the next two worker indices.
 
 ## Merge, validate, freeze
@@ -234,14 +270,29 @@ python3 "$KJO" download-kernel-output --run-dir <run_dir> --kernel-id <owner>/<s
   --kind all --all --mark-downloaded
 ```
 
+**Kaggle rate-limits the listing call, per IP, not per credential.**
+`kernels.KernelsApiService/ListKernelSessionOutput` starts answering HTTP 429
+(`Too Many Requests`) after repeated large fetches, and another account's credential does not
+help. So:
+
+* fetch an `eval` run through its single `artifacts.tar.gz` (`pack-artifacts` step) instead of
+  the raw tree — an `eval` output holds 1106 PNGs plus metadata;
+* narrow every ad-hoc fetch with `--file-pattern` and combine artifacts into one regex
+  (for example `'.*(geneval_stages\.txt|[^/]*\.log)$'`) instead of making several calls;
+* space attempts out. A tight retry loop keeps the window open; a quiet period of tens of
+  minutes usually clears it.
+
 ## Caveats
 
 * `runwayml/stable-diffusion-v1-5` was withdrawn from the Hub and now redirects to
   `stable-diffusion-v1-5/stable-diffusion-v1-5`. Both workers hardcode the old id and
   `validate_bank.py` asserts it, so **do not rewrite the string**; `check_env.py` verifies
   the id is still reachable before any GPU time is spent.
-* GenEval is a separate conda environment (`geneval/environment.yml`,
-  mmdetection v2.28.2, evaluation weights) and is deliberately outside the uv project.
-  Treat it as its own job with its own pre-built artifact dataset.
+* GenEval is a separate environment (`geneval/environment.yml`, mmdetection v2.28.2,
+  Mask2Former weights) and is deliberately outside the uv project. `install_geneval_env.sh`
+  builds it under `/tmp` on the torch 2.1.2 + prebuilt mmcv-full 1.7.2 path and
+  `--phase geneval-build` preflights that build on CPU; it is still not part of the pinned uv
+  ``pyproject.toml`/`uv.lock` contract, so treat a change to the evaluator as a change to
+  this layer, not to the published environment.
 * `run_all.sh` (single machine, 2x RTX 4090) remains the canonical end-to-end reproduction.
   This layer reproduces the same steps as shardable Kaggle jobs.
