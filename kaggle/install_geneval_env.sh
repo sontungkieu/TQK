@@ -136,10 +136,14 @@ mark "mmcv-full 1.7.2 (prebuilt)"
 if [ ! -d "$ENV_DIR/mmdetection/.git" ]; then
   git clone --quiet --depth 1 --branch "$MMDET_TAG" https://github.com/open-mmlab/mmdetection.git "$ENV_DIR/mmdetection"
 fi
-# mmdet 2.x is pure Python (the CUDA ops live in mmcv), so a .pth entry is enough and
-# avoids an editable install whose setup.py imports torch at build time.
-echo "$ENV_DIR/mmdetection" > "$(dirname "$("$PY" -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')")/mmdet_source.pth"
-mark "mmdetection $MMDET_TAG source on PYTHONPATH"
+# mmdet 2.x is pure Python (the CUDA ops live in mmcv), so a .pth entry is enough and avoids
+# an editable install whose setup.py imports torch at build time. The .pth has to sit directly
+# inside site-packages: one directory higher it is never read, which is exactly how the first
+# builds died with "ModuleNotFoundError: No module named 'mmdet'" after a clean install.
+SITE_PACKAGES="$("$PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+printf '%s\n' "$ENV_DIR/mmdetection" > "$SITE_PACKAGES/mmdet_source.pth"
+"$PY" -c "import mmdet, pathlib; print('[geneval] mmdet', mmdet.__version__, 'from', pathlib.Path(mmdet.__file__).resolve().parent.parent)"
+mark "mmdetection $MMDET_TAG source on PYTHONPATH ($SITE_PACKAGES/mmdet_source.pth)"
 
 # Smoke test the whole evaluator import chain, so a broken environment fails here (CPU, cheap)
 # instead of after burning a GPU session. evaluate_images.py derives the Mask2Former config
