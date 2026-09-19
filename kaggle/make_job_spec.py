@@ -60,6 +60,35 @@ def build(args: argparse.Namespace) -> dict:
         outputs = [
             {"id": "env-check", "kind": "json", "path": "{working_root}/env_check.json", "required": True, "min_bytes": 2}
         ]
+    elif args.phase == "geneval-build":
+        # CPU: building the GenEval evaluator environment needs no GPU, and CPU sessions
+        # carry no weekly quota in the local policy. The tar is published as a private
+        # dataset and attached to the evaluation job later.
+        runtime = {"accelerator": "cpu"}
+        steps = [
+            {
+                "id": "env-check",
+                "kind": "python-script",
+                "path": "kaggle/check_env.py",
+                "args": ["--out", "{working_root}/env_check.json"],
+            },
+            {
+                "id": "build-geneval",
+                "kind": "shell-script",
+                "path": "kaggle/build_geneval_env.sh",
+                "timeout_s": 5400,
+            },
+        ]
+        outputs = [
+            {"id": "env-check", "kind": "json", "path": "{working_root}/env_check.json", "required": True, "min_bytes": 2},
+            {
+                "id": "geneval-artifact",
+                "kind": "file",
+                "path": "{working_root}/geneval_env_artifact.tar.gz",
+                "required": True,
+                "min_bytes": 1000000,
+            },
+        ]
     elif args.phase == "bench-decode":
         runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}
         steps = [
@@ -211,7 +240,11 @@ def build(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=["bank", "eval", "smoke-cpu", "smoke-gpu", "bench-decode"], required=True)
+    parser.add_argument(
+        "--phase",
+        choices=["bank", "eval", "smoke-cpu", "smoke-gpu", "bench-decode", "geneval-build"],
+        required=True,
+    )
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--worker-indices", default="0,1")
     parser.add_argument("--limit-prompts", type=int, default=0)
