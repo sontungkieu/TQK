@@ -85,6 +85,41 @@ def build(args: argparse.Namespace) -> dict:
             # tiny stage file, so the kernel output stays cheap to list and fetch.
             {"id": "geneval-stages", "kind": "file", "path": "{working_root}/geneval_stages.txt", "required": False},
         ]
+    elif args.phase == "report":
+        # Report-only session: the generation and evaluation are already done, so attach the
+        # finished kernel as a kernel source (--kernel-source owner/slug) and compute the phase-2
+        # report on CPU. No GPU quota, no regeneration, and nothing depends on the Kaggle output
+        # endpoint, which is the one that rate-limits.
+        validation = "exps/single_stage_validation_553"
+        runtime = {"accelerator": "cpu"}
+        report_items = (
+            "metadata metrics geneval_results protocol_manifest.json "
+            "prompts_geneval_all_553.jsonl FROZEN_SCHEDULE.json"
+        )
+        steps = [
+            {
+                "id": "stage-run-output",
+                "kind": "shell-script",
+                "path": "kaggle/stage_geneval_inputs.sh",
+                "timeout_s": 1800,
+                "env": {"STAGE_RUN_EXPORT": "0", "STAGE_ITEMS": report_items},
+            },
+            {"id": "aggregate", "kind": "shell-script", "path": "kaggle/aggregate_geneval.sh", "timeout_s": 1800},
+            {
+                "id": "pack-report",
+                "kind": "shell-script",
+                "path": "kaggle/pack_artifacts.sh",
+                "env": {
+                    "PACK_ITEMS": report_items + " FINAL_REPORT.md",
+                    "PACK_OUT": "{working_root}/t4_report_553.tar.gz",
+                },
+            },
+        ]
+        outputs = [
+            {"id": "final-report", "kind": "file", "path": "{project_root}/" + validation + "/FINAL_REPORT.md", "required": False},
+            {"id": "metrics", "kind": "directory", "path": "{project_root}/" + validation + "/metrics", "required": True},
+            {"id": "report-artifacts", "kind": "file", "path": "{working_root}/t4_report_553.tar.gz", "required": False},
+        ]
     elif args.phase == "geneval-eval":
         # Evaluation-only session. export_geneval.py needs the outputs tree, and regenerating
         # 553 prompts x 2 methods for a scoring bug is wasteful, so the finished generation
@@ -295,7 +330,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--phase",
-        choices=["bank", "eval", "smoke-cpu", "smoke-gpu", "bench-decode", "geneval-build", "geneval-eval"],
+        choices=[
+            "bank",
+            "eval",
+            "smoke-cpu",
+            "smoke-gpu",
+            "bench-decode",
+            "geneval-build",
+            "geneval-eval",
+            "report",
+        ],
         required=True,
     )
     parser.add_argument("--num-workers", type=int, default=2)

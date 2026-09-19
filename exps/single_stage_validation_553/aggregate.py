@@ -189,15 +189,34 @@ def main() -> None:
     (metrics / "paired_bootstrap.json").write_text(json.dumps(stats, indent=2) + "\n")
     (metrics / "geneval_win_tie_loss.json").write_text(json.dumps(win_tie_loss, indent=2) + "\n")
 
-    selected_all = pd.read_csv(CAL / "replay/selected_all120_per_prompt.csv")
-    psp_all = pd.concat([
-        pd.read_csv(CAL / "replay/psp_search_per_prompt.csv"),
-        pd.read_csv(CAL / "replay/psp_validation_per_prompt.csv"),
-    ])
-    cal_q = float(selected_all.final_IR.mean())
-    cal_o = float(selected_all.oracle_IR.mean())
-    cal_r = float(selected_all.selection_regret.mean())
-    cal_psp = float(psp_all.final_IR.mean())
+    # The phase-1 replay CSVs come from the calibration analysis and are not committed (the bank
+    # is excluded from the repo), so a validation-only session - for example one resumed from a
+    # finished generation kernel - falls back to the four all-120 numbers recorded beside the
+    # frozen schedule in kaggle/evidence/phase1_t4_freeze.json.
+    replay = CAL / "replay"
+    replay_inputs = [
+        replay / "selected_all120_per_prompt.csv",
+        replay / "psp_search_per_prompt.csv",
+        replay / "psp_validation_per_prompt.csv",
+    ]
+    if all(path.exists() for path in replay_inputs):
+        selected_all = pd.read_csv(replay_inputs[0])
+        psp_all = pd.concat([pd.read_csv(replay_inputs[1]), pd.read_csv(replay_inputs[2])])
+        cal_q = float(selected_all.final_IR.mean())
+        cal_o = float(selected_all.oracle_IR.mean())
+        cal_r = float(selected_all.selection_regret.mean())
+        cal_psp = float(psp_all.final_IR.mean())
+        cal_source = "phase-1 replay CSVs"
+    else:
+        recorded = json.loads(
+            (ROOT / "kaggle/evidence/phase1_t4_freeze.json").read_text()
+        )["calibration_all120"]
+        cal_q = float(recorded["selected_IR_mean"])
+        cal_o = float(recorded["oracle_IR_mean"])
+        cal_r = float(recorded["selection_regret_mean"])
+        cal_psp = float(recorded["psp_IR_mean"])
+        cal_source = "kaggle/evidence/phase1_t4_freeze.json"
+    print(f"[aggregate] phase-1 calibration numbers from {cal_source}")
     rows_by_method = {row["method"]: row for row in summary.to_dict("records")}
     psp_row, ours_row = rows_by_method["psp"], rows_by_method["ours"]
     main_table = "\n".join(

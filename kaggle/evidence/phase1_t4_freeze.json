@@ -113,5 +113,13 @@
     },
     "same_selected_schedule": true,
     "note": "identical 9->2@17 selection; only provenance differs (search rank and validation IR)"
+  },
+  "calibration_all120": {
+    "selected_IR_mean": 0.8184190556057729,
+    "oracle_IR_mean": 0.9384420267616709,
+    "selection_regret_mean": 0.12002297115589802,
+    "psp_IR_mean": 0.8170787292920674,
+    "source": "exps/single_stage_calibration/replay/{selected_all120,psp_search,psp_validation}_per_prompt.csv",
+    "note": "all-120 prompt replay means for the frozen schedule and for fixed PSP"
   }
 }
