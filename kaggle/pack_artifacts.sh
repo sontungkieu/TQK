@@ -13,7 +13,7 @@ OUT="${PACK_OUT:-/kaggle/working/artifacts.tar.gz}"
 
 cd "$EXP"
 items=""
-for name in outputs metadata metrics geneval_inputs protocol_manifest.json prompts_geneval_all_553.jsonl FROZEN_SCHEDULE.json; do
+for name in outputs metadata metrics geneval_inputs geneval_results protocol_manifest.json prompts_geneval_all_553.jsonl FROZEN_SCHEDULE.json FINAL_REPORT.md; do
   [ -e "$name" ] && items="$items $name"
 done
 [ -n "$items" ] || { echo "[pack] nothing to pack in $EXP"; exit 1; }

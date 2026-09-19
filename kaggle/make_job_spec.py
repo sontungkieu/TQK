@@ -172,6 +172,9 @@ def build(args: argparse.Namespace) -> dict:
             # samples are symlinks into this session outputs tree, then removed again.
             {"id": "install-geneval", "kind": "shell-script", "path": "kaggle/install_geneval_env.sh", "timeout_s": 3600},
             {"id": "evaluate-geneval", "kind": "shell-script", "path": "kaggle/evaluate_geneval.sh", "timeout_s": 7200},
+            # Reports are computed here, in the session that owns the data and the project
+            # environment, instead of on a laptop afterwards. The step is best effort.
+            {"id": "aggregate", "kind": "shell-script", "path": "kaggle/aggregate_geneval.sh", "timeout_s": 900},
             # One archive keeps later downloads to a single output listing, which is the
             # Kaggle endpoint that rate-limits (HTTP 429) on repeated large fetches.
             {"id": "pack-artifacts", "kind": "shell-script", "path": "kaggle/pack_artifacts.sh"},
