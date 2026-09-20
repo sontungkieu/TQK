@@ -1,0 +1,12 @@
+18:49:33 OK venv created (Python 3.10.17)                  free_tmp=1019.0G env=88K
+18:49:33 OK base tooling                                   free_tmp=1019.0G env=12M
+18:49:35 OK numpy 1.x pinned (1.26.4)                      free_tmp=1018.9G env=79M
+18:50:06 OK torch 2.1.2+cu121 / torchvision 0.16.2         free_tmp=1014.4G env=4.6G
+18:50:12 OK evaluator deps (clip-benchmark 1.6.2, mmdet runtime requirements) free_tmp=1013.8G env=5.2G
+18:50:13 OK mmengine 0.10.4                                free_tmp=1013.8G env=5.3G
+18:50:22 OK mmcv-full 1.7.2 (prebuilt)                     free_tmp=1013.6G env=5.5G
+18:50:31 OK mmdetection v2.28.2 source on PYTHONPATH (/tmp/geneval_env/lib/python3.10/site-packages/mmdet_source.pth) free_tmp=1013.5G env=5.6G
+18:50:41 OK import check (evaluator chain)                 free_tmp=1013.4G env=5.6G
+18:51:12 OK Mask2Former weights                            free_tmp=1013.2G env=5.6G
+18:51:13 OK manifest                                       free_tmp=1013.2G env=5.6G
+18:51:13 OK done (environment kept in /tmp for this session only) free_tmp=1013.2G env=5.6G
