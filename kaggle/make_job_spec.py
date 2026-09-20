@@ -120,6 +120,24 @@ def build(args: argparse.Namespace) -> dict:
             {"id": "metrics", "kind": "directory", "path": "{project_root}/" + validation + "/metrics", "required": True},
             {"id": "report-artifacts", "kind": "file", "path": "{working_root}/t4_report_553.tar.gz", "required": False},
         ]
+    elif args.phase == "bench-speedup":
+        # Measures UNet-level acceleration options (attention backend, torch.compile, CUDA graphs,
+        # timestep-embedding cache skipping) on the real workload shape: speed, VRAM, UNet calls
+        # and the latent drift against the untouched baseline.
+        runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}
+        steps = [
+            {
+                "id": "env-check",
+                "kind": "python-script",
+                "path": "kaggle/check_env.py",
+                "args": ["--out", "{working_root}/env_check.json", "--expect-gpus", str(args.expect_gpus), "--require-cuda"],
+            },
+            {"id": "bench-speedup", "kind": "python-script", "path": "kaggle/bench_speedup.py", "timeout_s": 5400},
+        ]
+        outputs = [
+            {"id": "env-check", "kind": "json", "path": "{working_root}/env_check.json", "required": True, "min_bytes": 2},
+            {"id": "speedup-bench", "kind": "json", "path": "{working_root}/speedup_bench.json", "required": True, "min_bytes": 2},
+        ]
     elif args.phase == "geneval-eval":
         # Evaluation-only session. export_geneval.py needs the outputs tree, and regenerating
         # 553 prompts x 2 methods for a scoring bug is wasteful, so the finished generation
@@ -338,6 +356,7 @@ def main() -> None:
             "bench-decode",
             "geneval-build",
             "geneval-eval",
+            "bench-speedup",
             "report",
         ],
         required=True,
