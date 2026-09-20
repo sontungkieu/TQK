@@ -108,8 +108,10 @@ def run_once(pipe, batch: int, variant: str) -> dict:
 
     try:
         started = time.perf_counter()
+        # The worker batches N candidates of ONE prompt, so the prompt is repeated to set the
+        # effective batch size; a single string would make diffusers expect one generator only.
         result = pipe(
-            PROMPT,
+            [PROMPT] * batch,
             num_inference_steps=STEPS,
             guidance_scale=GUIDANCE,
             generator=generators,
