@@ -73,6 +73,26 @@ validation IR 0.5881 vs 0.5974 - which is what different fp16 kernels on T4 vs 4
 produce. `kaggle/evidence/phase1_t4_freeze.json` records this run's numbers, the top-5
 search table and the bank SHA-256.
 
+## Phase 2 result on T4 (this deployment)
+
+The full three-metric comparison ran end to end on 2x T4: generation + HPS in
+`codemaivanngu/tqk-eval-553-260918-1759` (24 394.7 s, 553 prompts validated) and official GenEval
+in the evaluation-only session `codemaivanngu/tqk-geneval-eval-260919-1846` (one method per GPU,
+~20 min). 553 prompts, paired per-prompt differences, 10 000-resample bootstrap:
+
+| Metric | PSP | Ours | Delta | 95% CI |
+| --- | ---: | ---: | ---: | ---: |
+| ImageReward | 0.844619 | 0.828312 | -0.016307 | [-0.042217, +0.010073] |
+| HPS | 0.278091 | 0.278399 | +0.000308 | [-0.001007, +0.001614] |
+| GenEval | 0.544304 | 0.547920 | +0.003617 | [-0.019892, +0.027125] |
+
+Every interval contains zero, and the published 4090 run reported the same shape
+(ImageReward -0.013016 [-0.038019, +0.012314], HPS +0.000384). Ours used 247 instead of 256
+logical UNet evaluations (-3.5%) and 40.734 instead of 42.699 s/prompt (-4.6%), so the T4
+replication supports the same efficiency claim and no quality claim. The report, metric tables,
+official GenEval summaries and raw per-image decisions are committed under
+`kaggle/evidence/t4_replication_553/`.
+
 ## Phase 2 (GenEval-553 validation)
 
 `exps/single_stage_validation_553/` compares fixed PSP with the frozen schedule produced
