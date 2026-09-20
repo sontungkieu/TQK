@@ -160,9 +160,24 @@ def main() -> None:
                 from diffusers.models.attention_processor import AttnProcessor2_0
                 pipe.unet.set_attn_processor(AttnProcessor2_0())
             elif variant.startswith('compile'):
+                # One failing variant must not end the whole bench: the compile path is the one
+                # that can break on a given torch/diffusers pair, so it is recorded and skipped.
+                import traceback
+
                 mode = 'default' if variant == 'compile_default' else 'reduce-overhead'
-                pipe.unet = torch.compile(pipe.unet, mode=mode, fullgraph=False)
-                run_once(pipe, batch, variant + '_warmup')
+                try:
+                    pipe.unet = torch.compile(pipe.unet, mode=mode, fullgraph=False)
+                    run_once(pipe, batch, variant + '_warmup')
+                except Exception:
+                    error = traceback.format_exc()
+                    results[f'{prefix}/{variant}'] = {
+                        'variant': variant, 'batch': batch, 'error': error[-1500:],
+                    }
+                    OUT.write_text(json.dumps(results, indent=2) + chr(10))
+                    print('[bench] {0} failed: {1}'.format(variant, error.strip().splitlines()[-1][:200]))
+                    del pipe
+                    torch.cuda.empty_cache()
+                    continue
             record = run_once(pipe, batch, variant)
             if variant == 'baseline':
                 reference[prefix] = record.pop('latents')
