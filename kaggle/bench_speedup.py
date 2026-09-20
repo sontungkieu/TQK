@@ -174,6 +174,9 @@ def main() -> None:
             print('[bench] {0}/{1}: {2:.1f}s {3:.0f} ms/image-step calls={4} vram={5:.2f} GiB rel={6:.4f}'.format(
                 prefix, variant, record['elapsed_s'], record['ms_per_image_step'],
                 record['unet_calls'], record['peak_vram_gib'], record.get('latent_rel_error', 0.0)))
+            # Dump after every variant: if a later variant crashes, the measurements already
+            # collected survive in the output instead of being lost with the step.
+            OUT.write_text(json.dumps(results, indent=2) + chr(10))
             del pipe
             torch.cuda.empty_cache()
     OUT.write_text(json.dumps(results, indent=2) + chr(10))
@@ -188,4 +191,12 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    import traceback
+
+    try:
+        main()
+    except Exception:
+        # Kaggle keeps only the notebook log, which does not carry a step's raw stdout, so the
+        # traceback is printed explicitly here and picked up by the log fetch.
+        print('[bench] FAILED' + chr(10) + traceback.format_exc())
+        raise
