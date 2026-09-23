@@ -1,31 +1,26 @@
 #!/usr/bin/env python3
-"""Speed/quality bench for UNet-level acceleration on the TQK workload.
+"""Speed/quality bench for UNet-level acceleration on the TQK workload (v2).
 
-Workload: SD1.5 (runwayml/stable-diffusion-v1-5), 512x512, fp16, DDIM 64 steps, eta 0,
-guidance 7.5 - the phase-2 worker setting. Two shapes: batch 8 x 64 steps (early phase of an
-8-seed schedule) and batch 2 x 64 steps (tail phase after two prunes, GPU least occupied).
+Changes from v1, both driven by its own measurements:
+  * torch.compile needs triton, which the locked uv environment does not install, so the bench
+    installs triton in-session (remote install; the locked env is untouched for real runs).
+  * the timestep-embedding cache distances measured ~0.001 per step, so the v1 thresholds were
+    ~100x too high and the variant degenerated into returning the first prediction. Thresholds
+    are now calibrated to that scale and each run reports its observed skip fraction, which is
+    the number that must be non-zero before any speed number is believable.
+  * every variant runs inside try/except and results are dumped after each one.
 
-Variants, each changing exactly one thing against the baseline:
-  baseline            AttnProcessor (legacy math attention), plain UNet
-  sdpa                AttnProcessor2_0 (scaled_dot_product_attention; mem-efficient on sm75)
-  compile_default     torch.compile(mode='default')
-  compile_reduce      torch.compile(mode='reduce-overhead') - inductor + CUDA graphs
-  cache_temb_010/020  TeaCache-style: accumulate the relative L1 drift of the timestep
-                      embedding and reuse the previous noise prediction below a threshold.
-                      The official rescale polynomial is NOT applied, so the thresholds are
-                      not comparable to the TeaCache paper; skip fraction and drift are what
-                      this bench measures.
-  skip_stride2        reuse the previous noise prediction every second step - an upper bound
-                      on what block-level caching (DeepCache) can buy, cruder in quality.
-
-Per run: seconds, ms per image-step, UNet forward calls, peak allocated VRAM, latent relative
-error against the baseline latents for the same seeds, and ImageReward when it imports.
+Per run: seconds, ms/image-step, UNet forward calls, skip fraction, peak VRAM, and latent drift
+against the baseline latents for the same seeds.
 """
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import torch
@@ -40,56 +35,85 @@ SHAPES = ((8, 64), (2, 64))
 PROMPT = "a photo of a red bench and a blue car"
 OUT = Path("/kaggle/working/speedup_bench.json")
 REPORT = Path("/kaggle/working/speedup_bench.md")
+CACHE_THRESHOLDS = {'cache_temb_0005': 0.0005, 'cache_temb_001': 0.001, 'cache_temb_002': 0.002}
+VARIANTS = [
+    'baseline',
+    'sdpa',
+    'compile_default',
+    'compile_reduce',
+    'cache_temb_0005',
+    'cache_temb_001',
+    'cache_temb_002',
+    'skip_stride2',
+]
 
 
-def build_pipeline() -> StableDiffusionPipeline:
+def ensure_triton() -> str:
+    try:
+        import triton  # noqa: F401
+        return 'present'
+    except Exception:
+        pass
+    uv = shutil.which('uv')
+    if not uv:
+        return 'uv-missing'
+    command = [uv, 'pip', 'install', '--python', sys.executable, 'triton==2.4.0']
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=900)
+    print('[bench] triton install rc={0}'.format(completed.returncode))
+    if completed.returncode != 0:
+        print(completed.stderr[-600:])
+    return 'installed' if completed.returncode == 0 else 'failed'
+
+
+def build_pipeline():
     pipe = StableDiffusionPipeline.from_pretrained(
         MODEL, torch_dtype=torch.float16, safety_checker=None, requires_safety_checker=False
     )
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     pipe.set_progress_bar_config(disable=True)
-    return pipe.to("cuda")
+    return pipe.to('cuda')
 
 
 def base_latents(batch: int) -> torch.Tensor:
-    generator = torch.Generator(device="cuda").manual_seed(SEEDS[0])
+    generator = torch.Generator(device='cuda').manual_seed(SEEDS[0])
     shape = (batch, 4, SIZE // 8, SIZE // 8)
-    return torch.randn(shape, generator=generator, device="cuda", dtype=torch.float16)
+    return torch.randn(shape, generator=generator, device='cuda', dtype=torch.float16)
 
 
 def run_once(pipe, batch: int, variant: str) -> dict:
     latents = base_latents(batch)
-    generators = [torch.Generator(device="cuda").manual_seed(seed) for seed in SEEDS[:batch]]
+    generators = [torch.Generator(device='cuda').manual_seed(seed) for seed in SEEDS[:batch]]
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     calls = {'n': 0}
-    original_forward = pipe.unet.forward
+    real_forward = pipe.unet.forward
 
     def counting_forward(*args, **kwargs):
         calls['n'] += 1
-        return original_forward(*args, **kwargs)
+        return real_forward(*args, **kwargs)
 
     pipe.unet.forward = counting_forward
-    state = {"previous": None, "accumulated": 0.0, "step": 0, "temb": None}
+    state = {'previous': None, 'accumulated': 0.0, 'step': 0, 'temb': None}
     hooks = []
 
     def temb_hook(module, inputs, output):
         current = output.detach()
-        previous = state["temb"]
+        previous = state['temb']
         if previous is not None:
-            state["accumulated"] += float((current - previous).abs().mean() / (previous.abs().mean() + 1e-6))
-        state["temb"] = current
+            scale = max(float(previous.abs().mean()), 1e-6)
+            state['accumulated'] += float((current - previous).abs().mean()) / scale
+        state['temb'] = current
 
     if variant.startswith('cache_temb'):
-        threshold = float(variant.rsplit('_', 1)[1]) / 100.0
+        threshold = CACHE_THRESHOLDS[variant]
         hooks.append(pipe.unet.time_embedding.register_forward_hook(temb_hook))
 
         def caching_forward(*args, **kwargs):
-            if state["accumulated"] < threshold and state["previous"] is not None:
-                return state["previous"]
-            result = original_forward(*args, **kwargs)
-            state["accumulated"] = 0.0
-            state["previous"] = result
+            if state['accumulated'] < threshold and state['previous'] is not None:
+                return state['previous']
+            result = counting_forward(*args, **kwargs)
+            state['accumulated'] = 0.0
+            state['previous'] = result
             return result
 
         pipe.unet.forward = caching_forward
@@ -97,123 +121,104 @@ def run_once(pipe, batch: int, variant: str) -> dict:
         stride = int(variant.rsplit('_', 1)[1])
 
         def strided_forward(*args, **kwargs):
-            state["step"] += 1
-            if state["previous"] is not None and state["step"] % stride != 0:
-                return state["previous"]
-            result = original_forward(*args, **kwargs)
-            state["previous"] = result
+            state['step'] += 1
+            if state['previous'] is not None and state['step'] % stride != 0:
+                return state['previous']
+            result = counting_forward(*args, **kwargs)
+            state['previous'] = result
             return result
 
         pipe.unet.forward = strided_forward
 
     try:
         started = time.perf_counter()
-        # The worker batches N candidates of ONE prompt, so the prompt is repeated to set the
-        # effective batch size; a single string would make diffusers expect one generator only.
         result = pipe(
             [PROMPT] * batch,
             num_inference_steps=STEPS,
             guidance_scale=GUIDANCE,
             generator=generators,
             latents=latents.clone(),
-            output_type="latent",
+            output_type='latent',
             height=SIZE,
             width=SIZE,
         )
         elapsed = time.perf_counter() - started
         peak = torch.cuda.max_memory_allocated() / (1024 ** 3)
-        out = result.images.detach().float().cpu()
+        produced = result.images.detach().float().cpu()
     finally:
         for hook in hooks:
             hook.remove()
-        pipe.unet.forward = original_forward
-    return {
-        "variant": variant,
-        "batch": batch,
-        "elapsed_s": elapsed,
-        "image_steps": batch * STEPS,
-        "ms_per_image_step": 1000.0 * elapsed / (batch * STEPS),
-        "unet_calls": calls["n"],
-        "peak_vram_gib": peak,
-        "latents": out,
+        pipe.unet.forward = real_forward
+    record = {
+        'variant': variant,
+        'batch': batch,
+        'elapsed_s': elapsed,
+        'image_steps': batch * STEPS,
+        'ms_per_image_step': 1000.0 * elapsed / (batch * STEPS),
+        'unet_calls': calls['n'],
+        'skip_fraction': 1.0 - calls['n'] / float(STEPS),
+        'peak_vram_gib': peak,
+        'latents': produced,
     }
+    return record
 
 
 def main() -> None:
-    print(f'[bench] torch {torch.__version__} | {torch.cuda.get_device_name(0)}')
-    variants = [
-        'baseline',
-        'sdpa',
-        'compile_default',
-        'compile_reduce',
-        'cache_temb_010',
-        'cache_temb_020',
-        'skip_stride2',
-    ]
+    print('[bench] torch {0} | {1}'.format(torch.__version__, torch.cuda.get_device_name(0)))
+    print('[bench] triton: ' + ensure_triton())
     results: dict = {}
     reference: dict = {}
     for batch, steps in SHAPES:
-        prefix = f'b{batch}_s{steps}'
-        for variant in variants:
-            pipe = build_pipeline()
-            if variant == 'sdpa':
-                from diffusers.models.attention_processor import AttnProcessor2_0
-                pipe.unet.set_attn_processor(AttnProcessor2_0())
-            elif variant.startswith('compile'):
-                # One failing variant must not end the whole bench: the compile path is the one
-                # that can break on a given torch/diffusers pair, so it is recorded and skipped.
-                import traceback
-
-                mode = 'default' if variant == 'compile_default' else 'reduce-overhead'
-                try:
+        prefix = 'b{0}_s{1}'.format(batch, steps)
+        for variant in VARIANTS:
+            key = '{0}/{1}'.format(prefix, variant)
+            try:
+                pipe = build_pipeline()
+                if variant == 'sdpa':
+                    from diffusers.models.attention_processor import AttnProcessor2_0
+                    pipe.unet.set_attn_processor(AttnProcessor2_0())
+                elif variant.startswith('compile'):
+                    mode = 'default' if variant == 'compile_default' else 'reduce-overhead'
                     pipe.unet = torch.compile(pipe.unet, mode=mode, fullgraph=False)
                     run_once(pipe, batch, variant + '_warmup')
-                except Exception:
-                    error = traceback.format_exc()
-                    results[f'{prefix}/{variant}'] = {
-                        'variant': variant, 'batch': batch, 'error': error[-1500:],
-                    }
-                    OUT.write_text(json.dumps(results, indent=2) + chr(10))
-                    print('[bench] {0} failed: {1}'.format(variant, error.strip().splitlines()[-1][:200]))
-                    del pipe
-                    torch.cuda.empty_cache()
-                    continue
-            record = run_once(pipe, batch, variant)
-            if variant == 'baseline':
-                reference[prefix] = record.pop('latents')
-            else:
-                baseline = reference[prefix]
-                diff = (record['latents'] - baseline).abs()
-                record['latent_mae'] = float(diff.mean())
-                record['latent_rel_error'] = float(diff.mean() / (baseline.abs().mean() + 1e-6))
-                record.pop('latents')
-            results[f'{prefix}/{variant}'] = record
-            print('[bench] {0}/{1}: {2:.1f}s {3:.0f} ms/image-step calls={4} vram={5:.2f} GiB rel={6:.4f}'.format(
-                prefix, variant, record['elapsed_s'], record['ms_per_image_step'],
-                record['unet_calls'], record['peak_vram_gib'], record.get('latent_rel_error', 0.0)))
-            # Dump after every variant: if a later variant crashes, the measurements already
-            # collected survive in the output instead of being lost with the step.
+                record = run_once(pipe, batch, variant)
+                if variant == 'baseline':
+                    reference[prefix] = record.pop('latents')
+                else:
+                    diff = (record['latents'] - reference[prefix]).abs()
+                    record['latent_mae'] = float(diff.mean())
+                    record['latent_rel_error'] = float(diff.mean() / (reference[prefix].abs().mean() + 1e-6))
+                    record.pop('latents')
+                results[key] = record
+                print('[bench] {0}: {1:.1f}s {2:.0f} ms/image-step calls={3} skip={4:.2f} vram={5:.2f} rel={6:.4f}'.format(
+                    key, record['elapsed_s'], record['ms_per_image_step'], record['unet_calls'],
+                    record['skip_fraction'], record['peak_vram_gib'], record.get('latent_rel_error', 0.0)))
+                del pipe
+            except Exception:
+                error = traceback.format_exc()
+                results[key] = {'variant': variant, 'batch': batch, 'error': error[-1200:]}
+                print('[bench] {0} FAILED: {1}'.format(key, error.strip().splitlines()[-1][:180]))
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
             OUT.write_text(json.dumps(results, indent=2) + chr(10))
-            del pipe
-            torch.cuda.empty_cache()
-    OUT.write_text(json.dumps(results, indent=2) + chr(10))
     lines = ['# UNet acceleration bench (SD1.5, 512px, fp16, 64 DDIM steps)', '']
     for key in sorted(results):
         record = results[key]
-        lines.append('- {0}: {1:.2f} s, {2:.0f} ms/image-step, unet_calls={3}, vram={4:.2f} GiB, rel_err={5:.4f}'.format(
-            key, record['elapsed_s'], record['ms_per_image_step'], record['unet_calls'],
-            record['peak_vram_gib'], record.get('latent_rel_error', 0.0)))
+        if 'error' in record:
+            lines.append('- {0}: FAILED ({1})'.format(key, record['error'].strip().splitlines()[-1][:120]))
+        else:
+            lines.append('- {0}: {1:.2f} s, {2:.0f} ms/image-step, calls={3}, skip={4:.2f}, vram={5:.2f} GiB, rel_err={6:.4f}'.format(
+                key, record['elapsed_s'], record['ms_per_image_step'], record['unet_calls'],
+                record['skip_fraction'], record['peak_vram_gib'], record.get('latent_rel_error', 0.0)))
     REPORT.write_text(chr(10).join(lines) + chr(10))
     print('[bench] wrote', OUT, 'and', REPORT)
 
 
 if __name__ == '__main__':
-    import traceback
-
     try:
         main()
     except Exception:
-        # Kaggle keeps only the notebook log, which does not carry a step's raw stdout, so the
-        # traceback is printed explicitly here and picked up by the log fetch.
         print('[bench] FAILED' + chr(10) + traceback.format_exc())
         raise
