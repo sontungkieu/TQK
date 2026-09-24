@@ -88,6 +88,23 @@ def ensure_triton() -> str:
         status.append('ptxas: ' + (probe.stdout or 'not found').strip().replace(chr(10), ' ')[:100])
     except Exception:
         pass
+    if any('setuptools' in item for item in status):
+        # The measured root cause: triton 3.0.0 imports setuptools at import time, the synced
+        # venv has it only as a build constraint, so triton is installed yet unusable. Repair it
+        # in-session (1 MB wheel) instead of rebuilding the whole lock.
+        repair = shutil.which('uv')
+        if repair:
+            completed = subprocess.run(
+                [repair, 'pip', 'install', '--python', sys.executable, 'setuptools==69.5.1'],
+                capture_output=True, text=True, timeout=600,
+            )
+            status.append('setuptools repair rc={0}'.format(completed.returncode))
+            try:
+                import triton as repaired
+
+                status.append('import after repair: {0}'.format(getattr(repaired, '__version__', '?')))
+            except Exception as exc:
+                status.append('import after repair still fails: {0}'.format(type(exc).__name__))
     print('[bench] triton diagnosis: ' + ' | '.join(status))
     return 'diagnosed'
 
