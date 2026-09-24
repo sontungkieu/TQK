@@ -48,20 +48,48 @@ VARIANTS = [
 
 
 def ensure_triton() -> str:
+    """Diagnose triton instead of guessing.
+
+    The lock already pins triton 3.0.0 as a torch 2.4.0 dependency, so inductor's
+    "Cannot find a working triton installation" means the installed triton is unusable, not
+    missing. Report the import result, torch's own probes and whether ptxas exists; an earlier
+    attempt to install triton==2.4.0 could only fail because torch 2.4.0 pins ==3.0.0.
+    """
+    status = []
     try:
-        import triton  # noqa: F401
-        return 'present'
+        import triton
+
+        status.append('import ok version={0}'.format(getattr(triton, '__version__', '?')))
+    except Exception as exc:
+        status.append('import failed: {0}: {1}'.format(type(exc).__name__, str(exc)[:180]))
+    try:
+        from torch.utils import _triton as torch_triton
+
+        for name in ('has_triton', 'has_triton_package'):
+            probe = getattr(torch_triton, name, None)
+            if probe is not None:
+                try:
+                    status.append('{0}()={1}'.format(name, probe()))
+                except Exception as exc:
+                    status.append('{0}() raised {1}'.format(name, type(exc).__name__))
+    except Exception as exc:
+        status.append('torch.utils._triton unavailable: {0}'.format(type(exc).__name__))
+    try:
+        import importlib.metadata as metadata
+
+        status.append('triton dist: {0}'.format(metadata.version('triton')))
+    except Exception as exc:
+        status.append('triton dist missing: {0}'.format(type(exc).__name__))
+    try:
+        probe = subprocess.run(
+            ['sh', '-lc', 'command -v ptxas || ls /usr/local/cuda/bin/ptxas'],
+            capture_output=True, text=True, timeout=60,
+        )
+        status.append('ptxas: ' + (probe.stdout or 'not found').strip().replace(chr(10), ' ')[:100])
     except Exception:
         pass
-    uv = shutil.which('uv')
-    if not uv:
-        return 'uv-missing'
-    command = [uv, 'pip', 'install', '--python', sys.executable, 'triton==2.4.0']
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=900)
-    print('[bench] triton install rc={0}'.format(completed.returncode))
-    print('[bench] triton install stdout: ' + (completed.stdout or '')[-400:].replace(chr(10), ' | '))
-    print('[bench] triton install stderr: ' + (completed.stderr or '')[-400:].replace(chr(10), ' | '))
-    return 'installed' if completed.returncode == 0 else 'failed'
+    print('[bench] triton diagnosis: ' + ' | '.join(status))
+    return 'diagnosed'
 
 
 def build_pipeline():
