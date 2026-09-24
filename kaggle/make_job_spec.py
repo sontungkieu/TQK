@@ -138,6 +138,23 @@ def build(args: argparse.Namespace) -> dict:
             {"id": "env-check", "kind": "json", "path": "{working_root}/env_check.json", "required": True, "min_bytes": 2},
             {"id": "speedup-bench", "kind": "json", "path": "{working_root}/speedup_bench.json", "required": True, "min_bytes": 2},
         ]
+    elif args.phase == "bench-batch":
+        # Largest VAE-decode and UNet batch that still fits on one T4, with and without
+        # torch.compile, so "does compile raise the batch ceiling?" is answered by data.
+        runtime = {"accelerator": "gpu", "submit_accelerator": args.submit_accelerator}
+        steps = [
+            {
+                "id": "env-check",
+                "kind": "python-script",
+                "path": "kaggle/check_env.py",
+                "args": ["--out", "{working_root}/env_check.json", "--expect-gpus", str(args.expect_gpus), "--require-cuda"],
+            },
+            {"id": "bench-batch", "kind": "python-script", "path": "kaggle/bench_batch_memory.py", "timeout_s": 3600},
+        ]
+        outputs = [
+            {"id": "env-check", "kind": "json", "path": "{working_root}/env_check.json", "required": True, "min_bytes": 2},
+            {"id": "batch-memory", "kind": "json", "path": "{working_root}/batch_memory.json", "required": True, "min_bytes": 2},
+        ]
     elif args.phase == "geneval-eval":
         # Evaluation-only session. export_geneval.py needs the outputs tree, and regenerating
         # 553 prompts x 2 methods for a scoring bug is wasteful, so the finished generation
@@ -357,6 +374,7 @@ def main() -> None:
             "geneval-build",
             "geneval-eval",
             "bench-speedup",
+            "bench-batch",
             "report",
         ],
         required=True,
