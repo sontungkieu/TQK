@@ -41,10 +41,9 @@ VARIANTS = [
     'sdpa',
     'compile_default',
     'compile_reduce',
-    'cache_temb_0005',
-    'cache_temb_001',
-    'cache_temb_002',
     'skip_stride2',
+    'skip_stride3',
+    'skip_stride4',
 ]
 
 
@@ -60,8 +59,8 @@ def ensure_triton() -> str:
     command = [uv, 'pip', 'install', '--python', sys.executable, 'triton==2.4.0']
     completed = subprocess.run(command, capture_output=True, text=True, timeout=900)
     print('[bench] triton install rc={0}'.format(completed.returncode))
-    if completed.returncode != 0:
-        print(completed.stderr[-600:])
+    print('[bench] triton install stdout: ' + (completed.stdout or '')[-400:].replace(chr(10), ' | '))
+    print('[bench] triton install stderr: ' + (completed.stderr or '')[-400:].replace(chr(10), ' | '))
     return 'installed' if completed.returncode == 0 else 'failed'
 
 
@@ -118,7 +117,7 @@ def run_once(pipe, batch: int, variant: str) -> dict:
 
         pipe.unet.forward = caching_forward
     elif variant.startswith('skip_stride'):
-        stride = int(variant.rsplit('_', 1)[1])
+        stride = int(variant[len('skip_stride'):])
 
         def strided_forward(*args, **kwargs):
             state['step'] += 1
