@@ -140,6 +140,14 @@ def fit_gamma_aggregated(design, miss_rows, regret_rows, ridge=RIDGE, iters=60):
     return beta
 
 
+FIELDS = ("rounds", "n", "t1", "k1", "t2", "k2", "t3", "k3", "unet", "scores", "equiv", "prune_percent")
+
+
+def fields(policy: dict) -> dict:
+    """Shape description that is safe for one/two-discard policies (no t3/k3/prune_percent)."""
+    return {k: policy.get(k) for k in FIELDS}
+
+
 def main() -> None:
     bank = load_bank()
     prompt_ids = sorted(bank)
@@ -211,8 +219,13 @@ def main() -> None:
 
     rng = np.random.default_rng(BOOTSTRAP_SEED)
     picks = rng.integers(0, len(bank), size=(BOOTSTRAP, len(bank)))
-    lcb3 = np.percentile(delta3[picks].mean(axis=1), LCB_QUANTILE * 100, axis=0)
-    lcb12 = np.percentile(delta12[picks].mean(axis=1), LCB_QUANTILE * 100, axis=0)
+    # Resample multiplicities instead of fancy-indexing the (prompts, shapes) matrix: the direct
+    # form would materialise (BOOTSTRAP, prompts, shapes) ~ 27 GB for the three-discard family.
+    weights = np.zeros((BOOTSTRAP, len(bank)))
+    np.add.at(weights, (np.arange(BOOTSTRAP)[:, None], picks), 1.0)
+    weights /= len(bank)
+    lcb3 = np.percentile(weights @ delta3, LCB_QUANTILE * 100, axis=0)
+    lcb12 = np.percentile(weights @ delta12, LCB_QUANTILE * 100, axis=0)
     best3 = int(np.argmax(lcb3))
     union_lcb = sorted(
         [(float(lcb12[j]), "one/two", base[j]) for j in range(len(base))] +
@@ -232,15 +245,15 @@ def main() -> None:
         "baseline_psp": {"policy": PSP, "mean_q_ir": float(psp_q.mean())},
         "out_of_fold_gate_three": {**gate, "required_positive_folds": GATE_MIN_POSITIVE_FOLDS, "required_spearman": GATE_MIN_SPEARMAN, "folds": fold_reports},
         "measured_union_top10": [
-            {"delta_ir": value, **{k: p[k] for k in ("rounds", "n", "t1", "k1", "t2", "k2", "t3", "k3", "unet", "scores", "equiv")}}
+            {"delta_ir": value, **fields(p)}
             for value, p in all_measured[:10]
         ],
         "measured_three_top10": [
-            {"delta_ir": value, **{k: p[k] for k in ("n", "t1", "k1", "t2", "k2", "t3", "k3", "unet", "scores", "equiv", "prune_percent")}}
+            {"delta_ir": value, **fields(p)}
             for value, p in measured[:10]
         ],
         "freeze_lcb80_union_top10": [
-            {"lcb80_delta_ir": value, "family": fam, **{k: p[k] for k in ("rounds", "n", "t1", "k1", "t2", "t2", "t3", "k3", "unet", "scores", "equiv")}}
+            {"lcb80_delta_ir": value, "family": fam, **fields(p)}
             for value, fam, p in union_lcb[:10]
         ],
         "freeze_lcb80_three_best": {"lcb80_delta_ir": float(lcb3[best3]), "mean_delta_ir": float(delta3[:, best3].mean()),
