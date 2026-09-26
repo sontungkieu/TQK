@@ -23,10 +23,10 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def collect(root: Path) -> list[Path]:
+def collect(root: Path, bank_dir: str = "bank_raw") -> list[Path]:
     return sorted(
         path
-        for path in root.rglob("bank_raw/gpu*/*.json")
+        for path in root.rglob(f"{bank_dir}/gpu*/*.json")
         if path.name != "hardware.json" and path.stem.isdigit()
     )
 
@@ -36,6 +36,11 @@ def main() -> None:
     parser.add_argument("--input", action="append", required=True, help="downloaded output root; repeatable")
     parser.add_argument("--dest", required=True, help="target bank_raw directory")
     parser.add_argument("--expect-prompts", type=int, default=0)
+    parser.add_argument(
+        "--bank-dir",
+        default="bank_raw",
+        help="shard directory name to collect (default bank_raw; the 200-prompt bank uses bank200)",
+    )
     parser.add_argument("--copy-hardware", action="store_true", help="also copy hardware.json files into dest/hardware")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -51,7 +56,7 @@ def main() -> None:
 
     for raw_input in args.input:
         root = Path(raw_input)
-        files = collect(root)
+        files = collect(root, args.bank_dir)
         per_input[str(root)] = len(files)
         for path in files:
             prompt_id = int(path.stem)
@@ -77,7 +82,7 @@ def main() -> None:
         hardware_dir = dest / "hardware"
         hardware_dir.mkdir(parents=True, exist_ok=True)
         for raw_input in args.input:
-            for path in Path(raw_input).rglob("bank_raw/gpu*/hardware.json"):
+            for path in Path(raw_input).rglob(f"{args.bank_dir}/gpu*/hardware.json"):
                 target = hardware_dir / f"{path.parent.name}_{path.parent.parent.parent.parent.name}_hardware.json"
                 shutil.copy2(path, target)
 
