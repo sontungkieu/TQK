@@ -14,10 +14,11 @@ EXP = Path(__file__).resolve().parent
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-prompts", type=int, required=True)
+    parser.add_argument("--bank-dir", type=Path, default=EXP / "bank_raw")
     args = parser.parse_args()
     paths = sorted(
         path
-        for path in (EXP / "bank_raw").glob("gpu*/*.json")
+        for path in args.bank_dir.glob("gpu*/*.json")
         if path.name != "hardware.json"
     )
     assert len(paths) == args.expected_prompts, (len(paths), args.expected_prompts)

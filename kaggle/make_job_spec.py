@@ -328,8 +328,12 @@ def build(args: argparse.Namespace) -> dict:
         ]
         if args.limit_prompts:
             phase_args += ["--limit-prompts", str(args.limit_prompts)]
+        if args.phase == "bank":
+            phase_args += ["--prompts", f"exps/single_stage_calibration/{args.prompts_file}"]
+            phase_args += ["--expected-prompts", str(args.expected_prompts)]
+            phase_args += ["--out-dir", f"exps/single_stage_calibration/{args.bank_dir}"]
         exp_dir = "single_stage_calibration" if args.phase == "bank" else "single_stage_validation_553"
-        artifact_dir = "bank_raw" if args.phase == "bank" else "outputs"
+        artifact_dir = args.bank_dir if args.phase == "bank" else "outputs"
         steps = [
             {
                 "id": "env-check",
@@ -382,6 +386,22 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--worker-indices", default="0,1")
     parser.add_argument("--limit-prompts", type=int, default=0)
+    parser.add_argument(
+        "--prompts-file",
+        default="prompts/calibration_prompts.jsonl",
+        help="bank phase only: prompt manifest, relative to the calibration experiment directory",
+    )
+    parser.add_argument(
+        "--expected-prompts",
+        type=int,
+        default=120,
+        help="bank phase only: exact prompt count the manifest must contain",
+    )
+    parser.add_argument(
+        "--bank-dir",
+        default="bank_raw",
+        help="bank phase only: destination directory for the bank shards, relative to the experiment",
+    )
     parser.add_argument("--expect-gpus", type=int, default=2)
     parser.add_argument("--with-hps", action="store_true", help="append evaluate_hps.py after the generation step")
     parser.add_argument("--commit", default="")

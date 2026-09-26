@@ -32,6 +32,9 @@ ETA = 0.0
 GUIDANCE = 7.5
 CANDIDATES = 25
 FINAL_STEP = 64
+PROMPTS_FILE = EXP / "prompts/calibration_prompts.jsonl"
+PROMPT_COUNT = 120
+BANK_DIR = EXP / "bank_raw"
 
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -45,16 +48,34 @@ def latent_hash(tensor: torch.Tensor) -> str:
     return hashlib.sha256(tensor.detach().contiguous().cpu().numpy().tobytes()).hexdigest()
 
 
-def load_prompts() -> list[dict[str, Any]]:
+def load_prompts(
+    path: Path = PROMPTS_FILE, expected_count: int = PROMPT_COUNT
+) -> list[dict[str, Any]]:
+    """Load a calibration prompt manifest.
+
+    The defaults reproduce the committed 120-prompt phase-1 list exactly. The pre-registered
+    200-prompt bank passes prompts200/calibration_prompts.jsonl and 200: that manifest carries a
+    deterministic five-fold assignment instead of a search/validation split, so the grouping
+    assertions follow whichever grouping key the file actually carries and the groups must be
+    equal-sized.
+    """
     rows = [
         json.loads(line)
-        for line in (EXP / "prompts/calibration_prompts.jsonl").read_text().splitlines()
+        for line in path.read_text().splitlines()
         if line.strip()
     ]
-    assert len(rows) == 120
-    assert len({int(row["prompt_id"]) for row in rows}) == 120
-    assert sum(row["split"] == "search" for row in rows) == 80
-    assert sum(row["split"] == "validation" for row in rows) == 40
+    assert len(rows) == expected_count, (len(rows), expected_count)
+    assert len({int(row["prompt_id"]) for row in rows}) == expected_count
+    assert {int(row["prompt_id"]) for row in rows} == set(range(expected_count))
+    if "split" in rows[0]:
+        assert expected_count == PROMPT_COUNT
+        assert sum(row["split"] == "search" for row in rows) == 80
+        assert sum(row["split"] == "validation" for row in rows) == 40
+    else:
+        folds = sorted({int(row["fold"]) for row in rows})
+        assert folds == list(range(len(folds))), folds
+        sizes = {fold: sum(1 for row in rows if int(row["fold"]) == fold) for fold in folds}
+        assert len(set(sizes.values())) == 1, sizes
     return rows
 
 
@@ -198,8 +219,8 @@ def generate_prompt(pipe, row: dict[str, Any], worker_index: int) -> dict[str, A
     }
 
 
-def complete(prompt_id: int, worker_index: int) -> bool:
-    path = EXP / "bank_raw" / f"gpu{worker_index}" / f"{prompt_id:05d}.json"
+def complete(prompt_id: int, worker_index: int, bank_dir: Path = BANK_DIR) -> bool:
+    path = bank_dir / f"gpu{worker_index}" / f"{prompt_id:05d}.json"
     if not path.exists():
         return False
     try:
@@ -235,10 +256,22 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, required=True)
     parser.add_argument("--limit-prompts", type=int, default=0)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--prompts", type=Path, default=PROMPTS_FILE,
+        help="prompt manifest jsonl; defaults to the committed 120-prompt phase-1 list",
+    )
+    parser.add_argument(
+        "--expected-prompts", type=int, default=PROMPT_COUNT,
+        help="exact prompt count the manifest must contain (200 for the pre-registered bank)",
+    )
+    parser.add_argument(
+        "--out-dir", type=Path, default=BANK_DIR,
+        help="bank root receiving gpu<worker>/<prompt_id>.json; defaults to bank_raw",
+    )
     args = parser.parse_args()
     if torch.cuda.device_count() != 1:
         raise RuntimeError(f"Expected exactly one visible GPU, found {torch.cuda.device_count()}")
-    prompts = load_prompts()
+    prompts = load_prompts(args.prompts, args.expected_prompts)
     if args.limit_prompts:
         prompts = prompts[: args.limit_prompts]
     owned = [row for row in prompts if int(row["prompt_id"]) % args.num_workers == args.worker_index]
@@ -261,15 +294,15 @@ def main() -> None:
         "python": platform.python_version(),
         "owned_prompt_ids": [int(row["prompt_id"]) for row in owned],
     }
-    atomic_json(EXP / "bank_raw" / f"gpu{args.worker_index}" / "hardware.json", hardware)
+    atomic_json(args.out_dir / f"gpu{args.worker_index}" / "hardware.json", hardware)
     completed = 0
     for row in owned:
         prompt_id = int(row["prompt_id"])
-        if args.resume and complete(prompt_id, args.worker_index):
+        if args.resume and complete(prompt_id, args.worker_index, args.out_dir):
             completed += 1
             continue
         result = generate_prompt(pipe, row, args.worker_index)
-        atomic_json(EXP / "bank_raw" / f"gpu{args.worker_index}" / f"{prompt_id:05d}.json", result)
+        atomic_json(args.out_dir / f"gpu{args.worker_index}" / f"{prompt_id:05d}.json", result)
         print(json.dumps({
             "phase": "calibration_bank",
             "prompt_id": prompt_id,

@@ -7,6 +7,9 @@
 #
 #   kaggle/run_shard.sh --phase bank --num-workers 2 --worker-indices 0,1
 #   kaggle/run_shard.sh --phase bank --num-workers 8 --worker-indices 4,5 --limit-prompts 2
+#   kaggle/run_shard.sh --phase bank --num-workers 60 --worker-indices 0,1 \
+#       --prompts exps/single_stage_calibration/prompts200/calibration_prompts.jsonl \
+#       --expected-prompts 200 --out-dir exps/single_stage_calibration/bank200
 #   kaggle/run_shard.sh --phase eval --num-workers 2 --worker-indices 0,1
 set -euo pipefail
 
@@ -15,6 +18,9 @@ NUM_WORKERS=""
 WORKER_INDICES=""
 LIMIT="0"
 DRY_RUN="0"
+PROMPTS=""
+EXPECTED_PROMPTS=""
+OUT_DIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -22,13 +28,16 @@ while [[ $# -gt 0 ]]; do
     --num-workers) NUM_WORKERS="$2"; shift 2 ;;
     --worker-indices) WORKER_INDICES="$2"; shift 2 ;;
     --limit-prompts) LIMIT="$2"; shift 2 ;;
+    --prompts) PROMPTS="$2"; shift 2 ;;
+    --expected-prompts) EXPECTED_PROMPTS="$2"; shift 2 ;;
+    --out-dir) OUT_DIR="$2"; shift 2 ;;
     --dry-run) DRY_RUN="1"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 [[ -n "$PHASE" && -n "$NUM_WORKERS" && -n "$WORKER_INDICES" ]] || {
-  echo "usage: run_shard.sh --phase bank|eval --num-workers N --worker-indices a,b [--limit-prompts K] [--dry-run]" >&2
+  echo "usage: run_shard.sh --phase bank|eval --num-workers N --worker-indices a,b [--limit-prompts K] [--prompts FILE] [--expected-prompts N] [--out-dir DIR] [--dry-run]" >&2
   exit 2
 }
 
@@ -61,7 +70,7 @@ export PSP_VAE_SLICING="${PSP_VAE_SLICING:-1}"
 export PSP_VAE_CHUNK="${PSP_VAE_CHUNK:-0}"
 export PSP_ATTENTION_SLICING="${PSP_ATTENTION_SLICING:-0}"
 
-echo "[shard] phase=$PHASE num_workers=$NUM_WORKERS worker_indices=$WORKER_INDICES limit=$LIMIT"
+echo "[shard] phase=$PHASE num_workers=$NUM_WORKERS worker_indices=$WORKER_INDICES limit=$LIMIT prompts=${PROMPTS:-default} expected=${EXPECTED_PROMPTS:-default} out_dir=${OUT_DIR:-default}"
 echo "[shard] memory: vae_chunk=$PSP_VAE_CHUNK vae_slicing=$PSP_VAE_SLICING attention_slicing=$PSP_ATTENTION_SLICING alloc=$PYTORCH_CUDA_ALLOC_CONF"
 echo "[shard] python=$(command -v python) version=$(python -V 2>&1)"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader | sed 's/^/[shard] gpu /'
@@ -69,6 +78,17 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader | sed 's/^/
 extra=""
 if [[ "$LIMIT" != "0" ]]; then
   extra="--limit-prompts $LIMIT"
+fi
+# The 200-prompt bank passes its own manifest, count and destination; omitting all three keeps
+# the committed phase-1 invocation byte-identical.
+if [[ -n "$PROMPTS" ]]; then
+  extra="$extra --prompts $PROMPTS"
+fi
+if [[ -n "$EXPECTED_PROMPTS" ]]; then
+  extra="$extra --expected-prompts $EXPECTED_PROMPTS"
+fi
+if [[ -n "$OUT_DIR" ]]; then
+  extra="$extra --out-dir $OUT_DIR"
 fi
 
 pids=""

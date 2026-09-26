@@ -1,4 +1,5 @@
 bank_raw/
+bank200/
 __pycache__/
 plots/__pycache__/
 prompts/calibration_bank.csv
